@@ -27,6 +27,7 @@ def send_message(text: str) -> None:
         timeout=30,
     )
     print("send_message:", response.text)
+    response.raise_for_status()
 
 
 def send_document(file_url: str, caption: str) -> None:
@@ -42,6 +43,7 @@ def send_document(file_url: str, caption: str) -> None:
         timeout=60,
     )
     print("send_document:", response.text)
+    response.raise_for_status()
 
 
 def get_soup(url: str) -> BeautifulSoup:
@@ -96,7 +98,7 @@ def find_first_number_after(label: str, text: str) -> str:
     if idx == -1:
         return ""
 
-    snippet = text[idx:idx + 80]
+    snippet = text[idx:idx + 120]
     digits = "".join(ch if ch.isdigit() else " " for ch in snippet).split()
     return digits[0] if digits else ""
 
@@ -106,8 +108,8 @@ def parse_result_sentence(text: str) -> str:
         return ""
 
     idx = text.find(" gewinnt ")
-    start = max(0, idx - 80)
-    end = min(len(text), idx + 140)
+    start = max(0, idx - 100)
+    end = min(len(text), idx + 180)
     snippet = text[start:end].strip()
 
     parts = snippet.split(".")
