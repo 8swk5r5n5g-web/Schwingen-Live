@@ -192,3 +192,4 @@ if __name__ == "__main__":
 
     if today.weekday() == 4:
         check_agenda()
+send_message("✅ Test erfolgreich! Dein Schwingen-Bot läuft 🚀")
