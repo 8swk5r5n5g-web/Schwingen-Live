@@ -47,11 +47,22 @@ def send_document(file_url: str, caption: str) -> None:
 
 
 def get_soup(url: str) -> BeautifulSoup:
-    response = requests.get(
-        url,
-        headers={"User-Agent": "Mozilla/5.0"},
-        timeout=30,
-    )
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "de-CH,de;q=0.9,en;q=0.8",
+        "Referer": "https://esv.ch/",
+        "Connection": "keep-alive",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+
+    session = requests.Session()
+    response = session.get(url, headers=headers, timeout=30)
     response.raise_for_status()
     return BeautifulSoup(response.text, "html.parser")
 
@@ -185,8 +196,12 @@ def collect_agenda_events_for_weekend() -> list[dict]:
             continue
         seen_links.add(detail_url)
 
-        detail_soup = get_soup(detail_url)
-        website = extract_external_website(detail_soup)
+        try:
+            detail_soup = get_soup(detail_url)
+            website = extract_external_website(detail_soup)
+        except Exception as exc:
+            print(f"Fehler bei Agenda-Detailseite {detail_url}: {exc}")
+            website = ""
 
         day_name = ""
         for date_str in weekend_dates:
@@ -339,10 +354,16 @@ if __name__ == "__main__":
 
     state = load_state()
 
-    if is_event_today_or_tomorrow():
-        print("Hot Mode aktiv.")
-        check_ranglisten(state)
-    else:
-        print("Kein Event heute oder morgen.")
+    try:
+        if is_event_today_or_tomorrow():
+            print("Hot Mode aktiv.")
+            check_ranglisten(state)
+        else:
+            print("Kein Event heute oder morgen.")
+    except Exception as exc:
+        print(f"Fehler bei Event-Pruefung: {exc}")
 
-    send_weekend_agenda_if_needed(state)
+    try:
+        send_weekend_agenda_if_needed(state)
+    except Exception as exc:
+        print(f"Fehler bei Agenda-Post: {exc}")
