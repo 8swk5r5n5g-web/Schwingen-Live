@@ -56,7 +56,6 @@ def get_soup(url: str) -> BeautifulSoup:
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         "Accept-Language": "de-CH,de;q=0.9,en;q=0.8",
         "Referer": "https://esv.ch/",
-        "Connection": "keep-alive",
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
     }
@@ -94,9 +93,11 @@ def extract_title(soup: BeautifulSoup) -> str:
     h1 = soup.find("h1")
     if h1:
         return h1.get_text(" ", strip=True)
+
     title = soup.find("title")
     if title:
         return title.get_text(" ", strip=True)
+
     return "Schwingfest"
 
 
@@ -156,21 +157,6 @@ def get_relevant_weekend_dates(today: datetime) -> list[str]:
     saturday = today + timedelta(days=(5 - today.weekday()) % 7)
     sunday = today + timedelta(days=(6 - today.weekday()) % 7)
     return [saturday.strftime("%d.%m.%Y"), sunday.strftime("%d.%m.%Y")]
-
-
-def is_event_today_or_tomorrow() -> bool:
-    soup = get_soup(AGENDA_URL)
-    page_text = soup.get_text(" ", strip=True).lower()
-
-    today = datetime.today()
-    tomorrow = today + timedelta(days=1)
-
-    for date_value in [today, tomorrow]:
-        date_str = date_value.strftime("%d.%m.%Y")
-        if date_str in page_text and "aktiv" in page_text:
-            return True
-
-    return False
 
 
 def collect_agenda_events_for_weekend() -> list[dict]:
@@ -355,13 +341,10 @@ if __name__ == "__main__":
     state = load_state()
 
     try:
-        if is_event_today_or_tomorrow():
-            print("Hot Mode aktiv.")
-            check_ranglisten(state)
-        else:
-            print("Kein Event heute oder morgen.")
+        print("Pruefe Ranglisten immer direkt.")
+        check_ranglisten(state)
     except Exception as exc:
-        print(f"Fehler bei Event-Pruefung: {exc}")
+        print(f"Fehler bei Ranglisten-Pruefung: {exc}")
 
     try:
         send_weekend_agenda_if_needed(state)
