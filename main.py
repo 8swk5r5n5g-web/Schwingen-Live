@@ -1,16 +1,19 @@
 import os
 import json
 from datetime import datetime, timedelta
+from urllib.parse import urlencode
 
 import requests
 from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY")
 
 BASE_URL = "https://esv.ch"
 AGENDA_URL = f"{BASE_URL}/agenda/"
 RANGLISTEN_URL = f"{BASE_URL}/ranglisten/"
+SCRAPER_API_BASE = "https://api.scraperapi.com"
 
 STATE_FILE = "state.json"
 
@@ -46,24 +49,40 @@ def send_document(file_url: str, caption: str) -> None:
     response.raise_for_status()
 
 
-def get_soup(url: str) -> BeautifulSoup:
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "de-CH,de;q=0.9,en;q=0.8",
-        "Referer": "https://esv.ch/",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
+def build_scraperapi_url(target_url: str, render: bool = True, premium: bool = True) -> str:
+    params = {
+        "api_key": SCRAPER_API_KEY,
+        "url": target_url,
     }
 
-    session = requests.Session()
-    response = session.get(url, headers=headers, timeout=30)
+    if render:
+        params["render"] = "true"
+    if premium:
+        params["premium"] = "true"
+
+    # ScraperAPI empfiehlt, eigene Parameter vor dem url-Parameter zu setzen.
+    ordered_items = []
+    for key in ["api_key", "render", "premium", "url"]:
+        if key in params:
+            ordered_items.append((key, params[key]))
+
+    return f"{SCRAPER_API_BASE}?{urlencode(ordered_items)}"
+
+
+def get_html(url: str) -> str:
+    if not SCRAPER_API_KEY:
+        raise ValueError("SCRAPER_API_KEY fehlt.")
+
+    scraper_url = build_scraperapi_url(url, render=True, premium=True)
+    response = requests.get(scraper_url, timeout=90)
+    print(f"GET via ScraperAPI: {url} -> {response.status_code}")
     response.raise_for_status()
-    return BeautifulSoup(response.text, "html.parser")
+    return response.text
+
+
+def get_soup(url: str) -> BeautifulSoup:
+    html = get_html(url)
+    return BeautifulSoup(html, "html.parser")
 
 
 def load_state() -> dict:
@@ -337,11 +356,13 @@ def check_ranglisten(state: dict) -> None:
 if __name__ == "__main__":
     if not BOT_TOKEN or not CHAT_ID:
         raise ValueError("BOT_TOKEN oder CHAT_ID fehlt.")
+    if not SCRAPER_API_KEY:
+        raise ValueError("SCRAPER_API_KEY fehlt.")
 
     state = load_state()
 
     try:
-        print("Pruefe Ranglisten immer direkt.")
+        print("Pruefe Ranglisten via ScraperAPI.")
         check_ranglisten(state)
     except Exception as exc:
         print(f"Fehler bei Ranglisten-Pruefung: {exc}")
