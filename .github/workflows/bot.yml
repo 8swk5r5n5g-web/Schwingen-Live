@@ -31,13 +31,14 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
 
       - name: State committen (robust)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git pull origin main --rebase
+          git pull origin main --rebase || true
 
           git add state.json || true
           git diff --staged --quiet || git commit -m "Update bot state"
