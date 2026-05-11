@@ -1,7 +1,7 @@
 import os
 import re
 from html import escape
-from urllib.parse import urlencode, unquote
+from urllib.parse import urlencode
 
 import requests
 from bs4 import BeautifulSoup
@@ -60,89 +60,22 @@ def clean_text(text):
     return " ".join(text.split()).strip()
 
 
-def pdf_filename(pdf_url):
-    name = unquote(pdf_url.split("/")[-1])
-    return name.replace(".pdf", "")
+def extract_fest_name(soup):
+    text = clean_text(soup.get_text(" ", strip=True))
 
-
-def detect_pdf_type(text):
-    t = text.lower()
-
-    if "schlussrangliste" in t or "-rl" in t:
-        return "🏁 Schlussrangliste"
-
-    if "statistik" in t or "-st" in t:
-        return "📈 Statistik"
-
-    if "zwischenrangliste" in t:
-        return "📊 Zwischenrangliste"
-
-    return "📄 PDF"
-
-
-def is_allowed_pdf(href, link_text):
-    combined = f"{href} {link_text}".lower()
-    return (
-        "schlussrangliste" in combined
-        or "zwischenrangliste" in combined
-        or "statistik" in combined
-        or "-rl.pdf" in combined
-        or "-st.pdf" in combined
+    match = re.search(
+        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwingfest)",
+        text
     )
 
+    if match:
+        return clean_text(match.group(1))
 
-def extract_list_name(pdf_url, link_text, pdf_type):
-    text = clean_text(link_text)
-
-    if text:
-        return text
-
-    name = pdf_filename(pdf_url).lower()
-
-    if "zwischenrangliste" in name:
-        match = re.search(r"zwischenrangliste[_-]?(\d+)", name)
-        if match:
-            return f"Zwischenrangliste {match.group(1)}"
-        return "Zwischenrangliste"
-
-    if "statistik" in name:
-        match = re.search(r"statistik[_-]?(\d+)", name)
-        if match:
-            return f"Statistik {match.group(1)}"
-        return "Statistik"
-
-    if "-st" in name:
-        return "Statistik"
-
-    if "-rl" in name:
-        return "Schlussrangliste"
-
-    return pdf_type.replace("🏁", "").replace("📈", "").replace("📊", "").replace("📄", "").strip()
-
-
-def extract_fest_name_from_pdf(pdf_url):
-    name = pdf_filename(pdf_url)
-
-    name = re.sub(r"^\d{4}-\d{2}-\d{2}_", "", name)
-    name = re.sub(r"[-_](RL|ST)$", "", name, flags=re.IGNORECASE)
-    name = re.sub(r"[-_]?zwischenrangliste[_-]?\d*$", "", name, flags=re.IGNORECASE)
-    name = re.sub(r"[-_]?statistik[_-]?\d*$", "", name, flags=re.IGNORECASE)
-
-    name = name.replace("_", " ").replace("-", " ")
-    return clean_text(name)
-
-
-def extract_fest_name(soup, pdf_urls):
     h1 = soup.find("h1")
     if h1:
-        text = clean_text(h1.get_text(" ", strip=True))
-        if text and "Eidgenössischer Schwingerverband" not in text:
-            return text
-
-    for url in pdf_urls:
-        name = extract_fest_name_from_pdf(url)
-        if name:
-            return name
+        title = clean_text(h1.get_text(" ", strip=True))
+        if "Eidgenössischer Schwingerverband" not in title:
+            return title
 
     return "Schwingfest"
 
@@ -186,6 +119,54 @@ def extract_festinfo(soup):
     return lines
 
 
+def is_statistik_1_to_6(link_text, href):
+    text = f"{link_text} {href}".lower()
+
+    if "statistik" not in text:
+        return False
+
+    if "zwischenrangliste" in text:
+        return False
+
+    patterns = [
+        r"statistik[_\- ]?([1-6])",
+        r"statistik nach einem gang",
+        r"statistik nach ([2-6]) g",
+    ]
+
+    for pattern in patterns:
+        if re.search(pattern, text):
+            return True
+
+    return False
+
+
+def is_schlussrangliste(link_text, href):
+    text = f"{link_text} {href}".lower()
+
+    if "schlussrangliste" in text:
+        return True
+
+    if re.search(r"[-_]?rl\.pdf$", href.lower()):
+        return True
+
+    return False
+
+
+def get_pdf_category(link_text, href):
+    if is_schlussrangliste(link_text, href):
+        return "🏁"
+
+    if is_statistik_1_to_6(link_text, href):
+        return "📈"
+
+    return ""
+
+
+def should_send_pdf(link_text, href):
+    return is_statistik_1_to_6(link_text, href) or is_schlussrangliste(link_text, href)
+
+
 def collect_detail_links():
     soup = get_soup(RANGLISTEN_URL)
 
@@ -215,9 +196,9 @@ def collect_detail_links():
     return links[:MAX_DETAIL_PAGES]
 
 
-def build_caption(pdf_type, list_name, fest_name, festinfo):
+def build_caption(icon, pdf_title, fest_name, festinfo):
     lines = [
-        f"<b>{escape(pdf_type)} – {escape(list_name)}</b>",
+        f"{icon} <b>{escape(pdf_title)}</b>",
         "",
         f"📍 <b>{escape(fest_name)}</b>",
     ]
@@ -234,6 +215,9 @@ def build_caption(pdf_type, list_name, fest_name, festinfo):
 def process_detail_page(detail_url):
     soup = get_soup(detail_url)
 
+    fest_name = extract_fest_name(soup)
+    festinfo = extract_festinfo(soup)
+
     pdf_entries = []
 
     for a in soup.find_all("a", href=True):
@@ -243,30 +227,29 @@ def process_detail_page(detail_url):
         if ".pdf" not in href.lower():
             continue
 
-        if not is_allowed_pdf(href, link_text):
+        if not should_send_pdf(link_text, href):
+            print(f"Ignoriert: {link_text} / {href}")
             continue
 
         pdf_url = normalise_url(href)
-        pdf_type = detect_pdf_type(f"{href} {link_text}")
-        list_name = extract_list_name(pdf_url, link_text, pdf_type)
+        icon = get_pdf_category(link_text, href)
+
+        pdf_title = link_text if link_text else "PDF"
 
         pdf_entries.append({
             "url": pdf_url,
-            "type": pdf_type,
-            "list_name": list_name,
+            "icon": icon,
+            "title": pdf_title,
         })
 
     if not pdf_entries:
         print("Keine passenden PDFs gefunden.")
         return
 
-    fest_name = extract_fest_name(soup, [p["url"] for p in pdf_entries])
-    festinfo = extract_festinfo(soup)
-
     for pdf in pdf_entries:
         caption = build_caption(
-            pdf["type"],
-            pdf["list_name"],
+            pdf["icon"],
+            pdf["title"],
             fest_name,
             festinfo,
         )
