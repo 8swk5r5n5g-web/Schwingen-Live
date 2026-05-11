@@ -1,5 +1,27 @@
 {
-  "sent_pdfs": [],
+  "sent_pdfs": [
+    "https://esv.ch/documents/ranglisten/2026-05-10_Mittellaendisches_Schwingfest-RL.pdf",
+    "https://esv.ch/documents/ranglisten/2026-05-10_Mittellaendisches_Schwingfest-ST.pdf",
+    "https://esv.ch/documents/ranglisten/zs1/2026-05-10_Mittellaendisches_Schwingfest-ST.pdf",
+    "https://esv.ch/documents/ranglisten/zs2/2026-05-10_Mittellaendisches_Schwingfest-ST.pdf",
+    "https://esv.ch/documents/ranglisten/zs3/2026-05-10_Mittellaendisches_Schwingfest-ST.pdf",
+    "https://esv.ch/documents/ranglisten/zs4/2026-05-10_Mittellaendisches_Schwingfest-ST.pdf",
+    "https://esv.ch/documents/ranglisten/zs5/2026-05-10_Mittellaendisches_Schwingfest-ST.pdf",
+    "https://esv.ch/documents/ranglisten/2026-05-10_106_Zuger_Kantonales_Schwingfest-RL.pdf",
+    "https://esv.ch/documents/ranglisten/2026-05-10_106_Zuger_Kantonales_Schwingfest-ST.pdf",
+    "https://esv.ch/documents/ranglisten/zs1/2026-05-10_106_Zuger_Kantonales_Schwingfest-ST.pdf",
+    "https://esv.ch/documents/ranglisten/zs2/2026-05-10_106_Zuger_Kantonales_Schwingfest-ST.pdf",
+    "https://esv.ch/documents/ranglisten/zs3/2026-05-10_106_Zuger_Kantonales_Schwingfest-ST.pdf",
+    "https://esv.ch/documents/ranglisten/zs4/2026-05-10_106_Zuger_Kantonales_Schwingfest-ST.pdf",
+    "https://esv.ch/documents/ranglisten/zs5/2026-05-10_106_Zuger_Kantonales_Schwingfest-ST.pdf",
+    "https://esv.ch/documents/ranglisten/2026-05-10_Fete_Regionale_Oron-RL.pdf",
+    "https://esv.ch/documents/ranglisten/2026-05-10_Fete_Regionale_Oron-ST.pdf",
+    "https://esv.ch/documents/ranglisten/zs1/2026-05-10_Fete_Regionale_Oron-ST.pdf",
+    "https://esv.ch/documents/ranglisten/zs2/2026-05-10_Fete_Regionale_Oron-ST.pdf",
+    "https://esv.ch/documents/ranglisten/zs3/2026-05-10_Fete_Regionale_Oron-ST.pdf",
+    "https://esv.ch/documents/ranglisten/zs4/2026-05-10_Fete_Regionale_Oron-ST.pdf",
+    "https://esv.ch/documents/ranglisten/zs5/2026-05-10_Fete_Regionale_Oron-ST.pdf"
+  ],
   "sent_results": [],
   "sent_agenda_dates": []
 }
