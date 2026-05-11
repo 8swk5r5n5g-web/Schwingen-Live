@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 from html import escape
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -14,17 +15,14 @@ CHAT_ID = os.getenv("CHAT_ID")
 SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY")
 
 BASE_URL = "https://esv.ch"
-RANGLISTEN_URL = "https://esv.ch/ranglisten/"
 AGENDA_URL = "https://esv.ch/agenda/"
 SCRAPER_API_BASE = "https://api.scraperapi.com"
 
 STATE_FILE = "state.json"
 
-MAX_DETAIL_PAGES = 5
-
-AGENDA_TEST_MODE = True
 AGENDA_POST_HOUR = 12
 AGENDA_POST_MINUTE = 30
+TIMEZONE = ZoneInfo("Europe/Zurich")
 
 
 def load_state():
@@ -33,7 +31,6 @@ def load_state():
             return json.load(file)
 
     return {
-        "sent_pdfs": [],
         "sent_agenda_dates": [],
     }
 
@@ -43,11 +40,36 @@ def save_state(state):
         json.dump(state, file, ensure_ascii=False, indent=2)
 
 
+def telegram_request_with_retry(url, data, timeout=30, retries=3):
+    for attempt in range(1, retries + 1):
+        response = requests.post(url, data=data, timeout=timeout)
+
+        print(response.text)
+
+        if response.status_code == 200:
+            return response
+
+        if response.status_code == 429:
+            try:
+                retry_after = response.json().get("parameters", {}).get("retry_after", 30)
+            except Exception:
+                retry_after = 30
+
+            print(f"Telegram Rate Limit erreicht. Warte {retry_after} Sekunden...")
+            time.sleep(retry_after + 1)
+            continue
+
+        response.raise_for_status()
+
+    print("Telegram-Nachricht konnte nach mehreren Versuchen nicht gesendet werden.")
+    return None
+
+
 def send_message(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-    response = requests.post(
-        url,
+    telegram_request_with_retry(
+        url=url,
         data={
             "chat_id": CHAT_ID,
             "text": text[:4096],
@@ -55,29 +77,8 @@ def send_message(text):
             "disable_web_page_preview": True,
         },
         timeout=30,
+        retries=3,
     )
-
-    print(response.text)
-    response.raise_for_status()
-
-
-def send_document(pdf_url, caption):
-    telegram_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-
-    response = requests.post(
-        telegram_url,
-        data={
-            "chat_id": CHAT_ID,
-            "document": pdf_url,
-            "caption": caption[:1024],
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        },
-        timeout=60,
-    )
-
-    print(response.text)
-    response.raise_for_status()
 
 
 def scraper_url(target_url):
@@ -110,18 +111,6 @@ def clean_text(text):
     return " ".join(text.split()).strip()
 
 
-def extract_number_after(label, text):
-    idx = text.lower().find(label.lower())
-
-    if idx == -1:
-        return ""
-
-    snippet = text[idx:idx + 100]
-    match = re.search(r"\d+", snippet)
-
-    return match.group(0) if match else ""
-
-
 def extract_website(soup):
     for link in soup.find_all("a", href=True):
         href = link["href"].strip()
@@ -130,249 +119,6 @@ def extract_website(soup):
             return href
 
     return ""
-
-
-def extract_fest_name(soup):
-    page_text = clean_text(soup.get_text(" ", strip=True))
-
-    patterns = [
-        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Kantonales Schwingfest)",
-        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwingfest)",
-        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwinget)",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, page_text)
-        if match:
-            return clean_text(match.group(1))
-
-    h1 = soup.find("h1")
-    if h1:
-        title = clean_text(h1.get_text(" ", strip=True))
-        if "Eidgenössischer Schwingerverband" not in title:
-            return title
-
-    return "Schwingfest"
-
-
-def extract_festinfos(soup):
-    text = clean_text(soup.get_text(" ", strip=True))
-
-    schwinger = extract_number_after("Anzahl Schwinger", text)
-    zuschauer = extract_number_after("Anzahl Zuschauer", text)
-    website = extract_website(soup)
-
-    lines = []
-
-    if schwinger:
-        lines.append(f"🤼 Anzahl Schwinger: {schwinger}")
-
-    if zuschauer:
-        lines.append(f"👥 Anzahl Zuschauer: {zuschauer}")
-
-    if website:
-        lines.append(f"🌐 Website: {website}")
-
-    return lines
-
-
-def is_schlussrangliste(link_text, href):
-    text = f"{link_text} {href}".lower()
-
-    if "zwischenrangliste" in text:
-        return False
-
-    return (
-        "schlussrangliste" in text
-        or "-rl.pdf" in text
-        or "_rl.pdf" in text
-    )
-
-
-def is_statistik_1_to_6(link_text, href):
-    text = f"{link_text} {href}".lower()
-
-    if "zwischenrangliste" in text:
-        return False
-
-    if "statistik" not in text and "-st.pdf" not in text and "_st.pdf" not in text:
-        return False
-
-    patterns = [
-        r"statistik nach einem gang",
-        r"statistik nach 1 gang",
-        r"statistik[_\- ]?1",
-        r"statistik nach 2 g",
-        r"statistik[_\- ]?2",
-        r"statistik nach 3 g",
-        r"statistik[_\- ]?3",
-        r"statistik nach 4 g",
-        r"statistik[_\- ]?4",
-        r"statistik nach 5 g",
-        r"statistik[_\- ]?5",
-        r"statistik nach 6 g",
-        r"statistik[_\- ]?6",
-        r"[-_]st\.pdf",
-    ]
-
-    return any(re.search(pattern, text) for pattern in patterns)
-
-
-def should_send_pdf(link_text, href):
-    text = f"{link_text} {href}".lower()
-
-    if "zwischenrangliste" in text:
-        return False
-
-    if is_statistik_1_to_6(link_text, href):
-        return True
-
-    if is_schlussrangliste(link_text, href):
-        return True
-
-    return False
-
-
-def get_icon(link_text, href):
-    if is_schlussrangliste(link_text, href):
-        return "🏁"
-
-    if is_statistik_1_to_6(link_text, href):
-        return "📈"
-
-    return "📄"
-
-
-def get_pdf_title(link_text, href):
-    title = clean_text(link_text)
-
-    if title:
-        return title
-
-    filename = href.split("/")[-1].replace(".pdf", "")
-
-    if is_schlussrangliste(link_text, href):
-        return "Schlussrangliste"
-
-    if "statistik_1" in filename.lower():
-        return "Statistik nach einem Gang"
-
-    if "statistik_2" in filename.lower():
-        return "Statistik nach 2 Gängen"
-
-    if "statistik_3" in filename.lower():
-        return "Statistik nach 3 Gängen"
-
-    if "statistik_4" in filename.lower():
-        return "Statistik nach 4 Gängen"
-
-    if "statistik_5" in filename.lower():
-        return "Statistik nach 5 Gängen"
-
-    if "statistik_6" in filename.lower():
-        return "Statistik nach 6 Gängen"
-
-    if is_statistik_1_to_6(link_text, href):
-        return "Statistik"
-
-    return "PDF"
-
-
-def build_pdf_caption(icon, pdf_title, fest_name, festinfos):
-    lines = [
-        f"{icon} <b>{escape(pdf_title)}</b>",
-        "",
-        f"📍 <b>{escape(fest_name)}</b>",
-    ]
-
-    if festinfos:
-        lines.append("")
-        lines.append("ℹ️ <b>Festinfos</b>")
-        for info in festinfos:
-            lines.append(escape(info))
-
-    return "\n".join(lines)
-
-
-def collect_ranglisten_detail_links():
-    soup = get_soup(RANGLISTEN_URL)
-
-    links = []
-    seen = set()
-
-    for link in soup.find_all("a", href=True):
-        href = link["href"]
-
-        if "/ranglisten/" not in href:
-            continue
-
-        full_url = normalise_url(href)
-
-        if full_url.rstrip("/") == RANGLISTEN_URL.rstrip("/"):
-            continue
-
-        if "?jahr=" in full_url:
-            continue
-
-        if full_url in seen:
-            continue
-
-        seen.add(full_url)
-        links.append(full_url)
-
-    return links[:MAX_DETAIL_PAGES]
-
-
-def process_ranglisten_detail_page(detail_url, state):
-    soup = get_soup(detail_url)
-
-    fest_name = extract_fest_name(soup)
-    festinfos = extract_festinfos(soup)
-
-    for link in soup.find_all("a", href=True):
-        href = link["href"]
-        link_text = clean_text(link.get_text(" ", strip=True))
-
-        if ".pdf" not in href.lower():
-            continue
-
-        if not should_send_pdf(link_text, href):
-            print(f"Ignoriert: {link_text} / {href}")
-            continue
-
-        pdf_url = normalise_url(href)
-
-        if pdf_url in state["sent_pdfs"]:
-            print(f"Bereits gesendet: {pdf_url}")
-            continue
-
-        icon = get_icon(link_text, href)
-        pdf_title = get_pdf_title(link_text, href)
-
-        caption = build_pdf_caption(
-            icon,
-            pdf_title,
-            fest_name,
-            festinfos,
-        )
-
-        send_document(pdf_url, caption)
-
-        state["sent_pdfs"].append(pdf_url)
-        save_state(state)
-
-
-def check_ranglisten(state):
-    detail_links = collect_ranglisten_detail_links()
-
-    print(f"Gefundene Ranglisten-Detailseiten: {len(detail_links)}")
-
-    for detail_url in detail_links:
-        try:
-            print(f"Pruefe Rangliste: {detail_url}")
-            process_ranglisten_detail_page(detail_url, state)
-        except Exception as exc:
-            print(f"Fehler bei {detail_url}: {exc}")
 
 
 def parse_agenda_date(text):
@@ -398,7 +144,7 @@ def weekend_dates_for_next_weekend(today):
 def collect_active_agenda_events():
     soup = get_soup(AGENDA_URL)
 
-    now = datetime.now(ZoneInfo("Europe/Zurich"))
+    now = datetime.now(TIMEZONE)
     target_dates = weekend_dates_for_next_weekend(now)
 
     events = []
@@ -461,7 +207,9 @@ def build_agenda_message(events):
     ]
 
     if not events:
-        lines.append("Aktuell wurden keine Schwingfeste der Aktiven für dieses Wochenende gefunden.")
+        lines.append(
+            "Aktuell wurden keine Schwingfeste der Aktiven für dieses Wochenende gefunden."
+        )
         return "\n".join(lines)
 
     for event in events:
@@ -479,46 +227,46 @@ def build_agenda_message(events):
 
 
 def should_send_agenda_today(state):
-    now = datetime.now(ZoneInfo("Europe/Zurich"))
-
+    now = datetime.now(TIMEZONE)
     today_key = now.strftime("%Y-%m-%d")
 
-    if AGENDA_TEST_MODE:
-        test_key = f"test-{today_key}-{now.strftime('%H%M')}"
-        if test_key in state["sent_agenda_dates"]:
-            return False
-        state["sent_agenda_dates"].append(test_key)
-        save_state(state)
-        return True
-
     if now.weekday() != 4:
+        print("Heute ist nicht Freitag. Agenda wird nicht gesendet.")
         return False
 
     if now.hour != AGENDA_POST_HOUR:
+        print("Aktuelle Stunde passt nicht. Agenda wird nicht gesendet.")
         return False
 
     if now.minute < AGENDA_POST_MINUTE or now.minute >= AGENDA_POST_MINUTE + 30:
+        print("Aktuelles Zeitfenster passt nicht. Agenda wird nicht gesendet.")
         return False
 
     if today_key in state["sent_agenda_dates"]:
+        print("Agenda wurde heute bereits gesendet.")
         return False
-
-    state["sent_agenda_dates"].append(today_key)
-    save_state(state)
 
     return True
 
 
+def mark_agenda_as_sent(state):
+    now = datetime.now(TIMEZONE)
+    today_key = now.strftime("%Y-%m-%d")
+
+    if today_key not in state["sent_agenda_dates"]:
+        state["sent_agenda_dates"].append(today_key)
+        save_state(state)
+
+
 def check_agenda(state):
     if not should_send_agenda_today(state):
-        print("Agenda wird jetzt nicht gesendet.")
         return
 
     events = collect_active_agenda_events()
-
     message = build_agenda_message(events)
 
     send_message(message)
+    mark_agenda_as_sent(state)
 
 
 def main():
@@ -533,9 +281,7 @@ def main():
 
     state = load_state()
 
-    print("Starte Botlauf...")
-
-    check_ranglisten(state)
+    print("Starte Wochenend-Vorschau...")
 
     check_agenda(state)
 
