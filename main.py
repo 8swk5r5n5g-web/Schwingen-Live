@@ -73,6 +73,20 @@ def normalise_url(url):
     return urljoin(BASE_URL, url)
 
 
+def weekday_de(date_value):
+    weekdays = {
+        0: "Montag",
+        1: "Dienstag",
+        2: "Mittwoch",
+        3: "Donnerstag",
+        4: "Freitag",
+        5: "Samstag",
+        6: "Sonntag",
+    }
+
+    return weekdays[date_value.weekday()]
+
+
 def get_next_friday(today):
     days_until_friday = (4 - today.weekday()) % 7
 
@@ -89,44 +103,43 @@ def weekend_dates_after_friday(friday):
     return {saturday.date(), sunday.date()}
 
 
-def weekday_de(date_value):
-    weekdays = {
-        0: "Montag",
-        1: "Dienstag",
-        2: "Mittwoch",
-        3: "Donnerstag",
-        4: "Freitag",
-        5: "Samstag",
-        6: "Sonntag",
-    }
+def parse_event_from_segment(segment_html):
+    segment_soup = BeautifulSoup(segment_html, "html.parser")
+    text = clean_text(segment_soup.get_text(" ", strip=True))
 
-    return weekdays[date_value.weekday()]
+    date_match = re.search(r"(\d{2}\.\d{2}\.\d{4})", text)
 
-
-def parse_event_text(text):
-    text = clean_text(text)
-
-    match = re.search(r"(\d{2}\.\d{2}\.\d{4})", text)
-    if not match:
+    if not date_match:
         return None
 
-    date_text = match.group(1)
+    date_text = date_match.group(1)
 
     try:
         event_date = datetime.strptime(date_text, "%d.%m.%Y").date()
     except ValueError:
         return None
 
-    rest = text[match.end():]
-    rest = rest.replace("Website", "")
-    rest = clean_text(rest)
+    after_date = clean_text(text[date_match.end():])
 
-    aktiv_match = re.search(r"\baktiv\b|aktiv", rest, re.IGNORECASE)
+    aktiv_match = re.search(r"aktiv", after_date, re.IGNORECASE)
+
     if not aktiv_match:
         return None
 
-    name = clean_text(rest[:aktiv_match.start()])
-    location = clean_text(rest[aktiv_match.end():])
+    name = clean_text(after_date[:aktiv_match.start()])
+    rest = clean_text(after_date[aktiv_match.end():])
+
+    rest = rest.replace("Website", "")
+    rest = clean_text(rest)
+
+    website = ""
+
+    for link in segment_soup.find_all("a", href=True):
+        link_text = clean_text(link.get_text(" ", strip=True))
+
+        if "website" in link_text.lower():
+            website = normalise_url(link["href"].strip())
+            break
 
     if not name:
         return None
@@ -134,30 +147,35 @@ def parse_event_text(text):
     return {
         "date": event_date,
         "name": name,
-        "location": location,
-        "website": "",
+        "location": rest,
+        "website": website,
     }
 
 
 def collect_active_agenda_events_for_dates(target_dates):
     soup = get_soup(AGENDA_URL)
 
-    content_text = soup.get_text("\n", strip=True)
-    raw_lines = content_text.splitlines()
+    html = str(soup)
+
+    segments = re.split(r"(?=\d{2}\.\d{2}\.\d{4})", html)
 
     events = []
     seen = set()
 
-    for line in raw_lines:
-        line = clean_text(line)
+    print(f"Agenda-Segmente gefunden: {len(segments)}")
 
-        if not re.match(r"^\d{2}\.\d{2}\.\d{4}", line):
+    for segment in segments:
+        if not re.search(r"\d{2}\.\d{2}\.\d{4}", segment):
             continue
 
-        event = parse_event_text(line)
+        event = parse_event_from_segment(segment)
 
         if not event:
             continue
+
+        print(
+            f"Agenda erkannt: {event['date']} | {event['name']} | {event['location']} | {event['website']}"
+        )
 
         if event["date"] not in target_dates:
             continue
@@ -170,39 +188,9 @@ def collect_active_agenda_events_for_dates(target_dates):
         seen.add(key)
         events.append(event)
 
-    for link in soup.find_all("a", href=True):
-        link_text = clean_text(link.get_text(" ", strip=True))
-
-        if "Website" not in link_text:
-            continue
-
-        parent_text = clean_text(link.parent.get_text(" ", strip=True))
-        event = parse_event_text(parent_text)
-
-        if not event:
-            continue
-
-        if event["date"] not in target_dates:
-            continue
-
-        website = normalise_url(link["href"].strip())
-
-        for existing_event in events:
-            same_date = existing_event["date"] == event["date"]
-            same_name = existing_event["name"] == event["name"]
-
-            if same_date and same_name:
-                existing_event["website"] = website
-                break
-
     events.sort(key=lambda item: (item["date"], item["name"]))
 
-    print(f"Gefundene Aktiv-Schwingfeste: {len(events)}")
-
-    for event in events:
-        print(
-            f"{event['date']} | {event['name']} | {event['location']} | {event['website']}"
-        )
+    print(f"Aktiv-Schwingfeste für Ziel-Wochenende gefunden: {len(events)}")
 
     return events
 
@@ -253,6 +241,7 @@ def check_agenda_testlauf():
     next_friday = get_next_friday(now)
     target_dates = weekend_dates_after_friday(next_friday)
 
+    print(f"Heutiges Datum: {now.strftime('%Y-%m-%d')}")
     print(f"Testlauf für kommenden Freitag: {next_friday.strftime('%Y-%m-%d')}")
     print(f"Ziel-Daten: {[date.strftime('%Y-%m-%d') for date in sorted(target_dates)]}")
 
@@ -264,6 +253,7 @@ def check_agenda_testlauf():
         target_dates=target_dates,
     )
 
+    print("Telegram-Nachricht:")
     print(message)
 
     send_message(message)
