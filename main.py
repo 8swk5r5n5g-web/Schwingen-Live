@@ -1,25 +1,17 @@
 import os
 import re
-import json
 import time
 from html import escape
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from urllib.parse import urlencode
 
 import requests
 from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY")
 
-BASE_URL = "https://esv.ch"
-AGENDA_URL = "https://esv.ch/agenda/"
-SCRAPER_API_BASE = "https://api.scraperapi.com"
-
-STATE_FILE = "state.json"
-
+AGENDA_URL = "https://arls.esv.ch/agenda/"
 TIMEZONE = ZoneInfo("Europe/Zurich")
 
 
@@ -64,56 +56,15 @@ def send_message(text):
     )
 
 
-def scraper_url(target_url):
-    params = {
-        "api_key": SCRAPER_API_KEY,
-        "url": target_url,
-        "render": "false",
-    }
-
-    return f"{SCRAPER_API_BASE}?{urlencode(params)}"
-
-
 def get_soup(url):
-    response = requests.get(scraper_url(url), timeout=45)
-
-    print(f"GET via ScraperAPI: {url} -> {response.status_code}")
-
+    response = requests.get(url, timeout=45)
+    print(f"GET: {url} -> {response.status_code}")
     response.raise_for_status()
     return BeautifulSoup(response.text, "html.parser")
 
 
-def normalise_url(url):
-    if url.startswith("http"):
-        return url
-
-    return requests.compat.urljoin(BASE_URL, url)
-
-
 def clean_text(text):
     return " ".join(text.split()).strip()
-
-
-def extract_website(soup):
-    for link in soup.find_all("a", href=True):
-        href = link["href"].strip()
-
-        if href.startswith("http") and "esv.ch" not in href:
-            return href
-
-    return ""
-
-
-def parse_agenda_date(text):
-    match = re.search(r"(\d{2}\.\d{2}\.\d{4})", text)
-
-    if not match:
-        return None
-
-    try:
-        return datetime.strptime(match.group(1), "%d.%m.%Y").date()
-    except ValueError:
-        return None
 
 
 def get_next_friday(today):
@@ -132,91 +83,120 @@ def weekend_dates_after_friday(friday):
     return {saturday.date(), sunday.date()}
 
 
+def weekday_de(date_value):
+    weekdays = {
+        0: "Montag",
+        1: "Dienstag",
+        2: "Mittwoch",
+        3: "Donnerstag",
+        4: "Freitag",
+        5: "Samstag",
+        6: "Sonntag",
+    }
+
+    return weekdays[date_value.weekday()]
+
+
+def parse_agenda_line(line):
+    match = re.match(
+        r"^(\d{2}\.\d{2}\.\d{4})\s+(.+?)\s+aktiv\s+(.+)$",
+        line,
+        re.IGNORECASE,
+    )
+
+    if not match:
+        return None
+
+    date_text = match.group(1)
+    name = clean_text(match.group(2))
+    location = clean_text(match.group(3))
+
+    try:
+        event_date = datetime.strptime(date_text, "%d.%m.%Y").date()
+    except ValueError:
+        return None
+
+    return {
+        "date": event_date,
+        "name": name,
+        "location": location,
+        "website": "",
+    }
+
+
 def collect_active_agenda_events_for_dates(target_dates):
     soup = get_soup(AGENDA_URL)
+
+    main_text = soup.get_text("\n", strip=True)
+    lines = [clean_text(line) for line in main_text.splitlines() if clean_text(line)]
 
     events = []
     seen = set()
 
+    website_links = {}
+
     for link in soup.find_all("a", href=True):
-        href = link["href"]
-        text = clean_text(link.get_text(" ", strip=True))
+        link_text = clean_text(link.get_text(" ", strip=True))
+        href = link["href"].strip()
 
-        if "/agenda/" not in href:
+        if link_text.lower() == "website":
+            website_links[href] = href
+
+    for line in lines:
+        event = parse_agenda_line(line)
+
+        if not event:
             continue
 
-        if "aktiv" not in text.lower():
+        if event["date"] not in target_dates:
             continue
 
-        event_date = parse_agenda_date(text)
+        key = f"{event['date']}-{event['name']}-{event['location']}"
 
-        if not event_date:
+        if key in seen:
             continue
 
-        if event_date not in target_dates:
-            continue
+        seen.add(key)
 
-        detail_url = normalise_url(href)
+        events.append(event)
 
-        if detail_url in seen:
-            continue
-
-        seen.add(detail_url)
-
-        website = ""
-
-        try:
-            detail_soup = get_soup(detail_url)
-            website = extract_website(detail_soup)
-        except Exception as exc:
-            print(f"Fehler bei Agenda Detailseite: {detail_url}: {exc}")
-
-        clean_event_text = text.replace("aktiv", "")
-        clean_event_text = clean_event_text.replace("Aktiv", "")
-        clean_event_text = clean_text(clean_event_text)
-
-        events.append(
-            {
-                "date": event_date,
-                "text": clean_event_text,
-                "website": website,
-            }
-        )
-
-    events.sort(key=lambda item: item["date"])
+    events.sort(key=lambda item: (item["date"], item["name"]))
 
     return events
 
 
-def build_agenda_message(events, test_friday, target_dates):
+def build_agenda_message(events, friday, target_dates):
     sorted_dates = sorted(target_dates)
 
     lines = [
-        "🧪 <b>Testlauf Wochenend-Vorschau</b>",
+        "🤼 <b>Schwingfeste am kommenden Wochenende</b>",
         "",
-        f"Referenz-Freitag: {test_friday.strftime('%d.%m.%Y')}",
-        f"Gesuchtes Wochenende: {sorted_dates[0].strftime('%d.%m.%Y')} / {sorted_dates[1].strftime('%d.%m.%Y')}",
-        "",
-        "📅 <b>Schwingfeste dieses Wochenende</b>",
+        f"📆 Vorschau vom Freitag, {friday.strftime('%d.%m.%Y')}",
+        f"🗓 Wochenende: {sorted_dates[0].strftime('%d.%m.%Y')} bis {sorted_dates[1].strftime('%d.%m.%Y')}",
         "",
     ]
 
     if not events:
-        lines.append(
-            "Aktuell wurden keine Schwingfeste der Aktiven für dieses Test-Wochenende gefunden."
-        )
+        lines.append("Für dieses Wochenende wurden keine Aktiv-Schwingfeste gefunden.")
         return "\n".join(lines)
 
-    for event in events:
-        date_text = event["date"].strftime("%d.%m.%Y")
+    current_date = None
 
-        lines.append(f"📍 <b>{escape(event['text'])}</b>")
-        lines.append(f"🗓 {date_text}")
+    for event in events:
+        if event["date"] != current_date:
+            current_date = event["date"]
+            lines.append(f"📌 <b>{weekday_de(event['date'])}, {event['date'].strftime('%d.%m.%Y')}</b>")
+            lines.append("")
+
+        lines.append(f"🏟 <b>{escape(event['name'])}</b>")
+        lines.append(f"📍 {escape(event['location'])}")
 
         if event["website"]:
             lines.append(f"🌐 {escape(event['website'])}")
 
         lines.append("")
+
+    lines.append("Viel Spass im Sägemehl! 💪")
 
     return "\n".join(lines).strip()
 
@@ -234,9 +214,11 @@ def check_agenda_testlauf():
 
     message = build_agenda_message(
         events=events,
-        test_friday=next_friday,
+        friday=next_friday,
         target_dates=target_dates,
     )
+
+    print(message)
 
     send_message(message)
 
@@ -247,9 +229,6 @@ def main():
 
     if not CHAT_ID:
         raise ValueError("CHAT_ID fehlt.")
-
-    if not SCRAPER_API_KEY:
-        raise ValueError("SCRAPER_API_KEY fehlt.")
 
     print("Starte Testlauf für kommenden Freitag...")
 
