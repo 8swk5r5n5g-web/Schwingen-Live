@@ -20,9 +20,9 @@ SCRAPER_API_BASE = "https://api.scraperapi.com"
 
 STATE_FILE = "state.json"
 
-AGENDA_POST_HOUR = 12
-AGENDA_POST_MINUTE = 30
 TIMEZONE = ZoneInfo("Europe/Zurich")
+
+TEST_MODE = True
 
 
 def load_state():
@@ -133,19 +133,24 @@ def parse_agenda_date(text):
         return None
 
 
-def weekend_dates_for_next_weekend(today):
-    days_until_saturday = (5 - today.weekday()) % 7
-    saturday = today + timedelta(days=days_until_saturday)
-    sunday = saturday + timedelta(days=1)
+def get_last_friday(today):
+    days_since_friday = (today.weekday() - 4) % 7
+
+    if days_since_friday == 0:
+        days_since_friday = 7
+
+    return today - timedelta(days=days_since_friday)
+
+
+def weekend_dates_after_friday(friday):
+    saturday = friday + timedelta(days=1)
+    sunday = friday + timedelta(days=2)
 
     return {saturday.date(), sunday.date()}
 
 
-def collect_active_agenda_events():
+def collect_active_agenda_events_for_dates(target_dates):
     soup = get_soup(AGENDA_URL)
-
-    now = datetime.now(TIMEZONE)
-    target_dates = weekend_dates_for_next_weekend(now)
 
     events = []
     seen = set()
@@ -200,15 +205,22 @@ def collect_active_agenda_events():
     return events
 
 
-def build_agenda_message(events):
+def build_agenda_message(events, test_friday, target_dates):
+    sorted_dates = sorted(target_dates)
+
     lines = [
+        "🧪 <b>Testlauf Wochenend-Vorschau</b>",
+        "",
+        f"Referenz-Freitag: {test_friday.strftime('%d.%m.%Y')}",
+        f"Gesuchtes Wochenende: {sorted_dates[0].strftime('%d.%m.%Y')} / {sorted_dates[1].strftime('%d.%m.%Y')}",
+        "",
         "📅 <b>Schwingfeste dieses Wochenende</b>",
         "",
     ]
 
     if not events:
         lines.append(
-            "Aktuell wurden keine Schwingfeste der Aktiven für dieses Wochenende gefunden."
+            "Aktuell wurden keine Schwingfeste der Aktiven für dieses Test-Wochenende gefunden."
         )
         return "\n".join(lines)
 
@@ -226,47 +238,24 @@ def build_agenda_message(events):
     return "\n".join(lines).strip()
 
 
-def should_send_agenda_today(state):
+def check_agenda_testlauf():
     now = datetime.now(TIMEZONE)
-    today_key = now.strftime("%Y-%m-%d")
 
-    if now.weekday() != 4:
-        print("Heute ist nicht Freitag. Agenda wird nicht gesendet.")
-        return False
+    last_friday = get_last_friday(now)
+    target_dates = weekend_dates_after_friday(last_friday)
 
-    if now.hour != AGENDA_POST_HOUR:
-        print("Aktuelle Stunde passt nicht. Agenda wird nicht gesendet.")
-        return False
+    print(f"Testlauf für Freitag: {last_friday.strftime('%Y-%m-%d')}")
+    print(f"Ziel-Daten: {[date.strftime('%Y-%m-%d') for date in sorted(target_dates)]}")
 
-    if now.minute < AGENDA_POST_MINUTE or now.minute >= AGENDA_POST_MINUTE + 30:
-        print("Aktuelles Zeitfenster passt nicht. Agenda wird nicht gesendet.")
-        return False
+    events = collect_active_agenda_events_for_dates(target_dates)
 
-    if today_key in state["sent_agenda_dates"]:
-        print("Agenda wurde heute bereits gesendet.")
-        return False
-
-    return True
-
-
-def mark_agenda_as_sent(state):
-    now = datetime.now(TIMEZONE)
-    today_key = now.strftime("%Y-%m-%d")
-
-    if today_key not in state["sent_agenda_dates"]:
-        state["sent_agenda_dates"].append(today_key)
-        save_state(state)
-
-
-def check_agenda(state):
-    if not should_send_agenda_today(state):
-        return
-
-    events = collect_active_agenda_events()
-    message = build_agenda_message(events)
+    message = build_agenda_message(
+        events=events,
+        test_friday=last_friday,
+        target_dates=target_dates,
+    )
 
     send_message(message)
-    mark_agenda_as_sent(state)
 
 
 def main():
@@ -279,13 +268,11 @@ def main():
     if not SCRAPER_API_KEY:
         raise ValueError("SCRAPER_API_KEY fehlt.")
 
-    state = load_state()
+    print("Starte Testlauf Wochenend-Vorschau...")
 
-    print("Starte Wochenend-Vorschau...")
+    check_agenda_testlauf()
 
-    check_agenda(state)
-
-    print("Botlauf beendet.")
+    print("Testlauf beendet.")
 
 
 if __name__ == "__main__":
