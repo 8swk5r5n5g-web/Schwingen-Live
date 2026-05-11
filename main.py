@@ -22,23 +22,6 @@ STATE_FILE = "state.json"
 
 TIMEZONE = ZoneInfo("Europe/Zurich")
 
-TEST_MODE = True
-
-
-def load_state():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r", encoding="utf-8") as file:
-            return json.load(file)
-
-    return {
-        "sent_agenda_dates": [],
-    }
-
-
-def save_state(state):
-    with open(STATE_FILE, "w", encoding="utf-8") as file:
-        json.dump(state, file, ensure_ascii=False, indent=2)
-
 
 def telegram_request_with_retry(url, data, timeout=30, retries=3):
     for attempt in range(1, retries + 1):
@@ -133,13 +116,13 @@ def parse_agenda_date(text):
         return None
 
 
-def get_last_friday(today):
-    days_since_friday = (today.weekday() - 4) % 7
+def get_next_friday(today):
+    days_until_friday = (4 - today.weekday()) % 7
 
-    if days_since_friday == 0:
-        days_since_friday = 7
+    if days_until_friday == 0:
+        days_until_friday = 7
 
-    return today - timedelta(days=days_since_friday)
+    return today + timedelta(days=days_until_friday)
 
 
 def weekend_dates_after_friday(friday):
@@ -241,17 +224,17 @@ def build_agenda_message(events, test_friday, target_dates):
 def check_agenda_testlauf():
     now = datetime.now(TIMEZONE)
 
-    last_friday = get_last_friday(now)
-    target_dates = weekend_dates_after_friday(last_friday)
+    next_friday = get_next_friday(now)
+    target_dates = weekend_dates_after_friday(next_friday)
 
-    print(f"Testlauf für Freitag: {last_friday.strftime('%Y-%m-%d')}")
+    print(f"Testlauf für kommenden Freitag: {next_friday.strftime('%Y-%m-%d')}")
     print(f"Ziel-Daten: {[date.strftime('%Y-%m-%d') for date in sorted(target_dates)]}")
 
     events = collect_active_agenda_events_for_dates(target_dates)
 
     message = build_agenda_message(
         events=events,
-        test_friday=last_friday,
+        test_friday=next_friday,
         target_dates=target_dates,
     )
 
@@ -268,7 +251,7 @@ def main():
     if not SCRAPER_API_KEY:
         raise ValueError("SCRAPER_API_KEY fehlt.")
 
-    print("Starte Testlauf Wochenend-Vorschau...")
+    print("Starte Testlauf für kommenden Freitag...")
 
     check_agenda_testlauf()
 
