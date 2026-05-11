@@ -4,6 +4,7 @@ import time
 from html import escape
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -11,6 +12,7 @@ from bs4 import BeautifulSoup
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
+BASE_URL = "https://arls.esv.ch"
 AGENDA_URL = "https://arls.esv.ch/agenda/"
 TIMEZONE = ZoneInfo("Europe/Zurich")
 
@@ -67,6 +69,10 @@ def clean_text(text):
     return " ".join(text.split()).strip()
 
 
+def normalise_url(url):
+    return urljoin(BASE_URL, url)
+
+
 def get_next_friday(today):
     days_until_friday = (4 - today.weekday()) % 7
 
@@ -97,23 +103,32 @@ def weekday_de(date_value):
     return weekdays[date_value.weekday()]
 
 
-def parse_agenda_line(line):
-    match = re.match(
-        r"^(\d{2}\.\d{2}\.\d{4})\s+(.+?)\s+aktiv\s+(.+)$",
-        line,
-        re.IGNORECASE,
-    )
+def parse_event_text(text):
+    text = clean_text(text)
 
+    match = re.search(r"(\d{2}\.\d{2}\.\d{4})", text)
     if not match:
         return None
 
     date_text = match.group(1)
-    name = clean_text(match.group(2))
-    location = clean_text(match.group(3))
 
     try:
         event_date = datetime.strptime(date_text, "%d.%m.%Y").date()
     except ValueError:
+        return None
+
+    rest = text[match.end():]
+    rest = rest.replace("Website", "")
+    rest = clean_text(rest)
+
+    aktiv_match = re.search(r"\baktiv\b|aktiv", rest, re.IGNORECASE)
+    if not aktiv_match:
+        return None
+
+    name = clean_text(rest[:aktiv_match.start()])
+    location = clean_text(rest[aktiv_match.end():])
+
+    if not name:
         return None
 
     return {
@@ -127,23 +142,19 @@ def parse_agenda_line(line):
 def collect_active_agenda_events_for_dates(target_dates):
     soup = get_soup(AGENDA_URL)
 
-    main_text = soup.get_text("\n", strip=True)
-    lines = [clean_text(line) for line in main_text.splitlines() if clean_text(line)]
+    content_text = soup.get_text("\n", strip=True)
+    raw_lines = content_text.splitlines()
 
     events = []
     seen = set()
 
-    website_links = {}
+    for line in raw_lines:
+        line = clean_text(line)
 
-    for link in soup.find_all("a", href=True):
-        link_text = clean_text(link.get_text(" ", strip=True))
-        href = link["href"].strip()
+        if not re.match(r"^\d{2}\.\d{2}\.\d{4}", line):
+            continue
 
-        if link_text.lower() == "website":
-            website_links[href] = href
-
-    for line in lines:
-        event = parse_agenda_line(line)
+        event = parse_event_text(line)
 
         if not event:
             continue
@@ -157,10 +168,41 @@ def collect_active_agenda_events_for_dates(target_dates):
             continue
 
         seen.add(key)
-
         events.append(event)
 
+    for link in soup.find_all("a", href=True):
+        link_text = clean_text(link.get_text(" ", strip=True))
+
+        if "Website" not in link_text:
+            continue
+
+        parent_text = clean_text(link.parent.get_text(" ", strip=True))
+        event = parse_event_text(parent_text)
+
+        if not event:
+            continue
+
+        if event["date"] not in target_dates:
+            continue
+
+        website = normalise_url(link["href"].strip())
+
+        for existing_event in events:
+            same_date = existing_event["date"] == event["date"]
+            same_name = existing_event["name"] == event["name"]
+
+            if same_date and same_name:
+                existing_event["website"] = website
+                break
+
     events.sort(key=lambda item: (item["date"], item["name"]))
+
+    print(f"Gefundene Aktiv-Schwingfeste: {len(events)}")
+
+    for event in events:
+        print(
+            f"{event['date']} | {event['name']} | {event['location']} | {event['website']}"
+        )
 
     return events
 
@@ -185,11 +227,15 @@ def build_agenda_message(events, friday, target_dates):
     for event in events:
         if event["date"] != current_date:
             current_date = event["date"]
-            lines.append(f"📌 <b>{weekday_de(event['date'])}, {event['date'].strftime('%d.%m.%Y')}</b>")
+            lines.append(
+                f"📌 <b>{weekday_de(event['date'])}, {event['date'].strftime('%d.%m.%Y')}</b>"
+            )
             lines.append("")
 
         lines.append(f"🏟 <b>{escape(event['name'])}</b>")
-        lines.append(f"📍 {escape(event['location'])}")
+
+        if event["location"]:
+            lines.append(f"📍 {escape(event['location'])}")
 
         if event["website"]:
             lines.append(f"🌐 {escape(event['website'])}")
