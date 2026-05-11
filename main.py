@@ -1,25 +1,41 @@
 import os
 import re
+import json
 import time
 from html import escape
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
-from urllib.parse import urljoin
+from urllib.parse import urlencode
 
 import requests
 from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY")
 
-BASE_URL = "https://arls.esv.ch"
-AGENDA_URL = "https://arls.esv.ch/agenda/"
-TIMEZONE = ZoneInfo("Europe/Zurich")
+BASE_URL = "https://esv.ch"
+RANGLISTEN_URL = "https://esv.ch/ranglisten/"
+SCRAPER_API_BASE = "https://api.scraperapi.com"
 
-TEST_REFERENCE_FRIDAY = "2026-05-15"
+STATE_FILE = "state.json"
+MAX_DETAIL_PAGES = 5
 
 
-def telegram_request_with_retry(url, data, timeout=30, retries=3):
+def load_state():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "r", encoding="utf-8") as file:
+            return json.load(file)
+
+    return {
+        "sent_pdfs": [],
+    }
+
+
+def save_state(state):
+    with open(STATE_FILE, "w", encoding="utf-8") as file:
+        json.dump(state, file, ensure_ascii=False, indent=2)
+
+
+def telegram_request_with_retry(url, data, timeout=60, retries=3):
     for attempt in range(1, retries + 1):
         response = requests.post(url, data=data, timeout=timeout)
 
@@ -40,255 +56,326 @@ def telegram_request_with_retry(url, data, timeout=30, retries=3):
 
         response.raise_for_status()
 
-    print("Telegram-Nachricht konnte nach mehreren Versuchen nicht gesendet werden.")
+    print("Telegram konnte nach mehreren Versuchen nicht senden.")
     return None
 
 
-def send_message(text):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+def send_document(pdf_url, caption):
+    telegram_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
 
     telegram_request_with_retry(
-        url=url,
+        url=telegram_url,
         data={
             "chat_id": CHAT_ID,
-            "text": text[:4096],
+            "document": pdf_url,
+            "caption": caption[:1024],
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
         },
-        timeout=30,
+        timeout=60,
         retries=3,
     )
 
 
+def scraper_url(target_url):
+    params = {
+        "api_key": SCRAPER_API_KEY,
+        "url": target_url,
+        "render": "false",
+    }
+
+    return f"{SCRAPER_API_BASE}?{urlencode(params)}"
+
+
 def get_soup(url):
-    response = requests.get(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0 Schwingen-Live-Bot"
-        },
-        timeout=45,
-    )
+    response = requests.get(scraper_url(url), timeout=45)
 
-    print(f"GET: {url} -> {response.status_code}")
+    print(f"GET via ScraperAPI: {url} -> {response.status_code}")
+
     response.raise_for_status()
-
     return BeautifulSoup(response.text, "html.parser")
+
+
+def normalise_url(url):
+    if url.startswith("http"):
+        return url
+
+    return requests.compat.urljoin(BASE_URL, url)
 
 
 def clean_text(text):
     return " ".join(text.split()).strip()
 
 
-def normalise_url(url):
-    return urljoin(BASE_URL, url)
+def extract_number_after(label, text):
+    idx = text.lower().find(label.lower())
+
+    if idx == -1:
+        return ""
+
+    snippet = text[idx:idx + 100]
+    match = re.search(r"\d+", snippet)
+
+    return match.group(0) if match else ""
 
 
-def weekday_de(date_value):
-    weekdays = {
-        0: "Montag",
-        1: "Dienstag",
-        2: "Mittwoch",
-        3: "Donnerstag",
-        4: "Freitag",
-        5: "Samstag",
-        6: "Sonntag",
-    }
+def extract_website(soup):
+    for link in soup.find_all("a", href=True):
+        href = link["href"].strip()
 
-    return weekdays[date_value.weekday()]
+        if href.startswith("http") and "esv.ch" not in href:
+            return href
+
+    return ""
 
 
-def weekend_dates_after_friday(friday):
-    saturday = friday + timedelta(days=1)
-    sunday = friday + timedelta(days=2)
+def extract_fest_name(soup):
+    page_text = clean_text(soup.get_text(" ", strip=True))
 
-    return {saturday.date(), sunday.date()}
-
-
-def parse_event_text(text):
-    text = clean_text(text)
-
-    match = re.search(
-        r"(\d{2}\.\d{2}\.\d{4})\s+(.+?)\s*aktiv\s+(.+)",
-        text,
-        re.IGNORECASE,
-    )
-
-    if not match:
-        return None
-
-    date_text = match.group(1)
-    name = clean_text(match.group(2))
-    location = clean_text(match.group(3))
-
-    location = location.replace("Website", "")
-    location = clean_text(location)
-
-    try:
-        event_date = datetime.strptime(date_text, "%d.%m.%Y").date()
-    except ValueError:
-        return None
-
-    return {
-        "date": event_date,
-        "name": name,
-        "location": location,
-        "website": "",
-    }
-
-
-def collect_active_agenda_events_for_dates(target_dates):
-    soup = get_soup(AGENDA_URL)
-
-    events = []
-    seen = set()
-
-    print("Suche Aktiv-Schwingfeste...")
-
-    all_tags = soup.find_all(["p", "li", "tr", "td", "div"])
-
-    for tag in all_tags:
-        text = clean_text(tag.get_text(" ", strip=True))
-
-        if not re.search(r"\d{2}\.\d{2}\.\d{4}", text):
-            continue
-
-        if "aktiv" not in text.lower():
-            continue
-
-        event = parse_event_text(text)
-
-        if not event:
-            continue
-
-        print(f"Agenda-Zeile erkannt: {text}")
-
-        if event["date"] not in target_dates:
-            continue
-
-        website = ""
-
-        for link in tag.find_all("a", href=True):
-            link_text = clean_text(link.get_text(" ", strip=True))
-
-            if "website" in link_text.lower():
-                website = normalise_url(link["href"].strip())
-                break
-
-        event["website"] = website
-
-        key = f"{event['date']}-{event['name']}-{event['location']}"
-
-        if key in seen:
-            continue
-
-        seen.add(key)
-        events.append(event)
-
-    if not events:
-        print("Fallback: Suche über Textzeilen...")
-
-        page_text = soup.get_text("\n", strip=True)
-        lines = [clean_text(line) for line in page_text.splitlines() if clean_text(line)]
-
-        for line in lines:
-            if not re.match(r"^\d{2}\.\d{2}\.\d{4}", line):
-                continue
-
-            if "aktiv" not in line.lower():
-                continue
-
-            event = parse_event_text(line)
-
-            if not event:
-                continue
-
-            print(f"Fallback-Zeile erkannt: {line}")
-
-            if event["date"] not in target_dates:
-                continue
-
-            key = f"{event['date']}-{event['name']}-{event['location']}"
-
-            if key in seen:
-                continue
-
-            seen.add(key)
-            events.append(event)
-
-    events.sort(key=lambda item: (item["date"], item["name"]))
-
-    print(f"Aktiv-Schwingfeste für Ziel-Wochenende gefunden: {len(events)}")
-
-    for event in events:
-        print(
-            f"{event['date']} | {event['name']} | {event['location']} | {event['website']}"
-        )
-
-    return events
-
-
-def build_agenda_message(events, friday, target_dates):
-    sorted_dates = sorted(target_dates)
-
-    lines = [
-        "🤼 <b>Schwingfeste am kommenden Wochenende</b>",
-        "",
-        f"📆 Vorschau vom Freitag, {friday.strftime('%d.%m.%Y')}",
-        f"🗓 Wochenende: {sorted_dates[0].strftime('%d.%m.%Y')} bis {sorted_dates[1].strftime('%d.%m.%Y')}",
-        "",
+    patterns = [
+        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Kantonales Schwingfest)",
+        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwingfest)",
+        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwinget)",
     ]
 
-    if not events:
-        lines.append("Für dieses Wochenende wurden keine Aktiv-Schwingfeste gefunden.")
-        return "\n".join(lines)
+    for pattern in patterns:
+        match = re.search(pattern, page_text)
+        if match:
+            return clean_text(match.group(1))
 
-    current_date = None
+    h1 = soup.find("h1")
+    if h1:
+        title = clean_text(h1.get_text(" ", strip=True))
+        if "Eidgenössischer Schwingerverband" not in title:
+            return title
 
-    for event in events:
-        if event["date"] != current_date:
-            current_date = event["date"]
-            lines.append(
-                f"📌 <b>{weekday_de(event['date'])}, {event['date'].strftime('%d.%m.%Y')}</b>"
-            )
-            lines.append("")
+    return "Schwingfest"
 
-        lines.append(f"🏟 <b>{escape(event['name'])}</b>")
 
-        if event["location"]:
-            lines.append(f"📍 {escape(event['location'])}")
+def extract_festinfos(soup):
+    text = clean_text(soup.get_text(" ", strip=True))
 
-        if event["website"]:
-            lines.append(f"🌐 {escape(event['website'])}")
+    schwinger = extract_number_after("Anzahl Schwinger", text)
+    zuschauer = extract_number_after("Anzahl Zuschauer", text)
+    website = extract_website(soup)
 
+    lines = []
+
+    if schwinger:
+        lines.append(f"🤼 Anzahl Schwinger: {schwinger}")
+
+    if zuschauer:
+        lines.append(f"👥 Anzahl Zuschauer: {zuschauer}")
+
+    if website:
+        lines.append(f"🌐 Website: {website}")
+
+    return lines
+
+
+def is_schlussrangliste(link_text, href):
+    text = f"{link_text} {href}".lower()
+
+    if "zwischenrangliste" in text:
+        return False
+
+    return (
+        "schlussrangliste" in text
+        or "-rl.pdf" in text
+        or "_rl.pdf" in text
+    )
+
+
+def is_statistik_1_to_6(link_text, href):
+    text = f"{link_text} {href}".lower()
+
+    if "zwischenrangliste" in text:
+        return False
+
+    if "statistik" not in text and "-st.pdf" not in text and "_st.pdf" not in text:
+        return False
+
+    patterns = [
+        r"statistik nach einem gang",
+        r"statistik nach 1 gang",
+        r"statistik[_\- ]?1",
+        r"statistik nach 2 g",
+        r"statistik[_\- ]?2",
+        r"statistik nach 3 g",
+        r"statistik[_\- ]?3",
+        r"statistik nach 4 g",
+        r"statistik[_\- ]?4",
+        r"statistik nach 5 g",
+        r"statistik[_\- ]?5",
+        r"statistik nach 6 g",
+        r"statistik[_\- ]?6",
+        r"[-_]st\.pdf",
+    ]
+
+    return any(re.search(pattern, text) for pattern in patterns)
+
+
+def should_send_pdf(link_text, href):
+    text = f"{link_text} {href}".lower()
+
+    if "zwischenrangliste" in text:
+        return False
+
+    if is_statistik_1_to_6(link_text, href):
+        return True
+
+    if is_schlussrangliste(link_text, href):
+        return True
+
+    return False
+
+
+def get_icon(link_text, href):
+    if is_schlussrangliste(link_text, href):
+        return "🏁"
+
+    if is_statistik_1_to_6(link_text, href):
+        return "📈"
+
+    return "📄"
+
+
+def get_pdf_title(link_text, href):
+    title = clean_text(link_text)
+
+    if title:
+        return title
+
+    filename = href.split("/")[-1].replace(".pdf", "")
+
+    if is_schlussrangliste(link_text, href):
+        return "Schlussrangliste"
+
+    if "statistik_1" in filename.lower():
+        return "Statistik nach einem Gang"
+
+    if "statistik_2" in filename.lower():
+        return "Statistik nach 2 Gängen"
+
+    if "statistik_3" in filename.lower():
+        return "Statistik nach 3 Gängen"
+
+    if "statistik_4" in filename.lower():
+        return "Statistik nach 4 Gängen"
+
+    if "statistik_5" in filename.lower():
+        return "Statistik nach 5 Gängen"
+
+    if "statistik_6" in filename.lower():
+        return "Statistik nach 6 Gängen"
+
+    if is_statistik_1_to_6(link_text, href):
+        return "Statistik"
+
+    return "PDF"
+
+
+def build_pdf_caption(icon, pdf_title, fest_name, festinfos):
+    lines = [
+        f"{icon} <b>{escape(pdf_title)}</b>",
+        "",
+        f"📍 <b>{escape(fest_name)}</b>",
+    ]
+
+    if festinfos:
         lines.append("")
+        lines.append("ℹ️ <b>Festinfos</b>")
+        for info in festinfos:
+            lines.append(escape(info))
 
-    lines.append("Viel Spass im Sägemehl! 💪")
-
-    return "\n".join(lines).strip()
+    return "\n".join(lines)
 
 
-def check_agenda_testlauf():
-    friday = datetime.strptime(TEST_REFERENCE_FRIDAY, "%Y-%m-%d").replace(
-        tzinfo=TIMEZONE
-    )
+def collect_ranglisten_detail_links():
+    soup = get_soup(RANGLISTEN_URL)
 
-    target_dates = weekend_dates_after_friday(friday)
+    links = []
+    seen = set()
 
-    print(f"Testlauf für Freitag: {friday.strftime('%Y-%m-%d')}")
-    print(f"Ziel-Daten: {[date.strftime('%Y-%m-%d') for date in sorted(target_dates)]}")
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
 
-    events = collect_active_agenda_events_for_dates(target_dates)
+        if "/ranglisten/" not in href:
+            continue
 
-    message = build_agenda_message(
-        events=events,
-        friday=friday,
-        target_dates=target_dates,
-    )
+        full_url = normalise_url(href)
 
-    print("Telegram-Nachricht:")
-    print(message)
+        if full_url.rstrip("/") == RANGLISTEN_URL.rstrip("/"):
+            continue
 
-    send_message(message)
+        if "?jahr=" in full_url:
+            continue
+
+        if full_url in seen:
+            continue
+
+        seen.add(full_url)
+        links.append(full_url)
+
+    return links[:MAX_DETAIL_PAGES]
+
+
+def process_ranglisten_detail_page(detail_url, state):
+    soup = get_soup(detail_url)
+
+    fest_name = extract_fest_name(soup)
+    festinfos = extract_festinfos(soup)
+
+    print(f"Fest erkannt: {fest_name}")
+
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
+        link_text = clean_text(link.get_text(" ", strip=True))
+
+        if ".pdf" not in href.lower():
+            continue
+
+        if not should_send_pdf(link_text, href):
+            print(f"Ignoriert: {link_text} / {href}")
+            continue
+
+        pdf_url = normalise_url(href)
+
+        if pdf_url in state["sent_pdfs"]:
+            print(f"Bereits gesendet: {pdf_url}")
+            continue
+
+        icon = get_icon(link_text, href)
+        pdf_title = get_pdf_title(link_text, href)
+
+        caption = build_pdf_caption(
+            icon,
+            pdf_title,
+            fest_name,
+            festinfos,
+        )
+
+        print(f"Sende PDF: {pdf_title} -> {pdf_url}")
+
+        send_document(pdf_url, caption)
+
+        state["sent_pdfs"].append(pdf_url)
+        save_state(state)
+
+        time.sleep(2)
+
+
+def check_ranglisten(state):
+    detail_links = collect_ranglisten_detail_links()
+
+    print(f"Gefundene Ranglisten-Detailseiten: {len(detail_links)}")
+
+    for detail_url in detail_links:
+        try:
+            print(f"Pruefe Rangliste: {detail_url}")
+            process_ranglisten_detail_page(detail_url, state)
+        except Exception as exc:
+            print(f"Fehler bei {detail_url}: {exc}")
 
 
 def main():
@@ -298,11 +385,16 @@ def main():
     if not CHAT_ID:
         raise ValueError("CHAT_ID fehlt.")
 
-    print("Starte Testlauf Agenda...")
+    if not SCRAPER_API_KEY:
+        raise ValueError("SCRAPER_API_KEY fehlt.")
 
-    check_agenda_testlauf()
+    state = load_state()
 
-    print("Testlauf beendet.")
+    print("Starte Testlauf Ranglisten und Statistiken...")
+
+    check_ranglisten(state)
+
+    print("Botlauf beendet.")
 
 
 if __name__ == "__main__":
