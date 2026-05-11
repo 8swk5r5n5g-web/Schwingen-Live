@@ -1,6 +1,9 @@
 import os
 import re
+import json
 from html import escape
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
 
 import requests
@@ -12,12 +15,50 @@ SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY")
 
 BASE_URL = "https://esv.ch"
 RANGLISTEN_URL = "https://esv.ch/ranglisten/"
+AGENDA_URL = "https://esv.ch/agenda/"
 SCRAPER_API_BASE = "https://api.scraperapi.com"
 
 STATE_FILE = "state.json"
-TEST_MODE = True
 
 MAX_DETAIL_PAGES = 5
+
+AGENDA_TEST_MODE = True
+AGENDA_POST_HOUR = 12
+AGENDA_POST_MINUTE = 30
+
+
+def load_state():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "r", encoding="utf-8") as file:
+            return json.load(file)
+
+    return {
+        "sent_pdfs": [],
+        "sent_agenda_dates": [],
+    }
+
+
+def save_state(state):
+    with open(STATE_FILE, "w", encoding="utf-8") as file:
+        json.dump(state, file, ensure_ascii=False, indent=2)
+
+
+def send_message(text):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+
+    response = requests.post(
+        url,
+        data={
+            "chat_id": CHAT_ID,
+            "text": text[:4096],
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        },
+        timeout=30,
+    )
+
+    print(response.text)
+    response.raise_for_status()
 
 
 def send_document(pdf_url, caption):
@@ -69,6 +110,28 @@ def clean_text(text):
     return " ".join(text.split()).strip()
 
 
+def extract_number_after(label, text):
+    idx = text.lower().find(label.lower())
+
+    if idx == -1:
+        return ""
+
+    snippet = text[idx:idx + 100]
+    match = re.search(r"\d+", snippet)
+
+    return match.group(0) if match else ""
+
+
+def extract_website(soup):
+    for link in soup.find_all("a", href=True):
+        href = link["href"].strip()
+
+        if href.startswith("http") and "esv.ch" not in href:
+            return href
+
+    return ""
+
+
 def extract_fest_name(soup):
     page_text = clean_text(soup.get_text(" ", strip=True))
 
@@ -90,28 +153,6 @@ def extract_fest_name(soup):
             return title
 
     return "Schwingfest"
-
-
-def extract_number_after(label, text):
-    idx = text.lower().find(label.lower())
-
-    if idx == -1:
-        return ""
-
-    snippet = text[idx:idx + 100]
-    match = re.search(r"\d+", snippet)
-
-    return match.group(0) if match else ""
-
-
-def extract_website(soup):
-    for link in soup.find_all("a", href=True):
-        href = link["href"].strip()
-
-        if href.startswith("http") and "esv.ch" not in href:
-            return href
-
-    return ""
 
 
 def extract_festinfos(soup):
@@ -237,7 +278,7 @@ def get_pdf_title(link_text, href):
     return "PDF"
 
 
-def build_caption(icon, pdf_title, fest_name, festinfos):
+def build_pdf_caption(icon, pdf_title, fest_name, festinfos):
     lines = [
         f"{icon} <b>{escape(pdf_title)}</b>",
         "",
@@ -253,7 +294,7 @@ def build_caption(icon, pdf_title, fest_name, festinfos):
     return "\n".join(lines)
 
 
-def collect_detail_links():
+def collect_ranglisten_detail_links():
     soup = get_soup(RANGLISTEN_URL)
 
     links = []
@@ -282,13 +323,11 @@ def collect_detail_links():
     return links[:MAX_DETAIL_PAGES]
 
 
-def process_detail_page(detail_url):
+def process_ranglisten_detail_page(detail_url, state):
     soup = get_soup(detail_url)
 
     fest_name = extract_fest_name(soup)
     festinfos = extract_festinfos(soup)
-
-    pdfs = []
 
     for link in soup.find_all("a", href=True):
         href = link["href"]
@@ -302,30 +341,184 @@ def process_detail_page(detail_url):
             continue
 
         pdf_url = normalise_url(href)
+
+        if pdf_url in state["sent_pdfs"]:
+            print(f"Bereits gesendet: {pdf_url}")
+            continue
+
         icon = get_icon(link_text, href)
         pdf_title = get_pdf_title(link_text, href)
 
-        pdfs.append(
-            {
-                "url": pdf_url,
-                "icon": icon,
-                "title": pdf_title,
-            }
-        )
-
-    if not pdfs:
-        print(f"Keine passenden PDFs gefunden: {fest_name}")
-        return
-
-    for pdf in pdfs:
-        caption = build_caption(
-            pdf["icon"],
-            pdf["title"],
+        caption = build_pdf_caption(
+            icon,
+            pdf_title,
             fest_name,
             festinfos,
         )
 
-        send_document(pdf["url"], caption)
+        send_document(pdf_url, caption)
+
+        state["sent_pdfs"].append(pdf_url)
+        save_state(state)
+
+
+def check_ranglisten(state):
+    detail_links = collect_ranglisten_detail_links()
+
+    print(f"Gefundene Ranglisten-Detailseiten: {len(detail_links)}")
+
+    for detail_url in detail_links:
+        try:
+            print(f"Pruefe Rangliste: {detail_url}")
+            process_ranglisten_detail_page(detail_url, state)
+        except Exception as exc:
+            print(f"Fehler bei {detail_url}: {exc}")
+
+
+def parse_agenda_date(text):
+    match = re.search(r"(\d{2}\.\d{2}\.\d{4})", text)
+
+    if not match:
+        return None
+
+    try:
+        return datetime.strptime(match.group(1), "%d.%m.%Y").date()
+    except ValueError:
+        return None
+
+
+def weekend_dates_for_next_weekend(today):
+    days_until_saturday = (5 - today.weekday()) % 7
+    saturday = today + timedelta(days=days_until_saturday)
+    sunday = saturday + timedelta(days=1)
+
+    return {saturday.date(), sunday.date()}
+
+
+def collect_active_agenda_events():
+    soup = get_soup(AGENDA_URL)
+
+    now = datetime.now(ZoneInfo("Europe/Zurich"))
+    target_dates = weekend_dates_for_next_weekend(now)
+
+    events = []
+    seen = set()
+
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
+        text = clean_text(link.get_text(" ", strip=True))
+
+        if "/agenda/" not in href:
+            continue
+
+        if "aktiv" not in text.lower():
+            continue
+
+        event_date = parse_agenda_date(text)
+
+        if not event_date:
+            continue
+
+        if event_date not in target_dates:
+            continue
+
+        detail_url = normalise_url(href)
+
+        if detail_url in seen:
+            continue
+
+        seen.add(detail_url)
+
+        website = ""
+
+        try:
+            detail_soup = get_soup(detail_url)
+            website = extract_website(detail_soup)
+        except Exception as exc:
+            print(f"Fehler bei Agenda Detailseite: {detail_url}: {exc}")
+
+        clean_event_text = text.replace("aktiv", "")
+        clean_event_text = clean_event_text.replace("Aktiv", "")
+        clean_event_text = clean_text(clean_event_text)
+
+        events.append(
+            {
+                "date": event_date,
+                "text": clean_event_text,
+                "website": website,
+            }
+        )
+
+    events.sort(key=lambda item: item["date"])
+
+    return events
+
+
+def build_agenda_message(events):
+    lines = [
+        "📅 <b>Schwingfeste dieses Wochenende</b>",
+        "",
+    ]
+
+    if not events:
+        lines.append("Aktuell wurden keine Schwingfeste der Aktiven für dieses Wochenende gefunden.")
+        return "\n".join(lines)
+
+    for event in events:
+        date_text = event["date"].strftime("%d.%m.%Y")
+
+        lines.append(f"📍 <b>{escape(event['text'])}</b>")
+        lines.append(f"🗓 {date_text}")
+
+        if event["website"]:
+            lines.append(f"🌐 {escape(event['website'])}")
+
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
+def should_send_agenda_today(state):
+    now = datetime.now(ZoneInfo("Europe/Zurich"))
+
+    today_key = now.strftime("%Y-%m-%d")
+
+    if AGENDA_TEST_MODE:
+        test_key = f"test-{today_key}-{now.strftime('%H%M')}"
+        if test_key in state["sent_agenda_dates"]:
+            return False
+        state["sent_agenda_dates"].append(test_key)
+        save_state(state)
+        return True
+
+    if now.weekday() != 4:
+        return False
+
+    if now.hour != AGENDA_POST_HOUR:
+        return False
+
+    if now.minute < AGENDA_POST_MINUTE or now.minute >= AGENDA_POST_MINUTE + 30:
+        return False
+
+    if today_key in state["sent_agenda_dates"]:
+        return False
+
+    state["sent_agenda_dates"].append(today_key)
+    save_state(state)
+
+    return True
+
+
+def check_agenda(state):
+    if not should_send_agenda_today(state):
+        print("Agenda wird jetzt nicht gesendet.")
+        return
+
+    events = collect_active_agenda_events()
+
+    message = build_agenda_message(events)
+
+    send_message(message)
 
 
 def main():
@@ -338,20 +531,15 @@ def main():
     if not SCRAPER_API_KEY:
         raise ValueError("SCRAPER_API_KEY fehlt.")
 
-    print("Starte Testlauf...")
+    state = load_state()
 
-    detail_links = collect_detail_links()
+    print("Starte Botlauf...")
 
-    print(f"Gefundene Detailseiten: {len(detail_links)}")
+    check_ranglisten(state)
 
-    for detail_url in detail_links:
-        try:
-            print(f"Pruefe: {detail_url}")
-            process_detail_page(detail_url)
-        except Exception as exc:
-            print(f"Fehler bei {detail_url}: {exc}")
+    check_agenda(state)
 
-    print("Testlauf beendet.")
+    print("Botlauf beendet.")
 
 
 if __name__ == "__main__":
