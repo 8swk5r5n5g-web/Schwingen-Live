@@ -1,9 +1,8 @@
 import os
 import re
+import json
 import time
 from html import escape
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
 
 import requests
@@ -17,8 +16,23 @@ BASE_URL = "https://esv.ch"
 RANGLISTEN_URL = "https://esv.ch/ranglisten/"
 SCRAPER_API_BASE = "https://api.scraperapi.com"
 
-TIMEZONE = ZoneInfo("Europe/Zurich")
-MAX_DETAIL_PAGES = 20
+STATE_FILE = "state.json"
+MAX_DETAIL_PAGES = 5
+
+
+def load_state():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "r", encoding="utf-8") as file:
+            return json.load(file)
+
+    return {
+        "sent_pdfs": [],
+    }
+
+
+def save_state(state):
+    with open(STATE_FILE, "w", encoding="utf-8") as file:
+        json.dump(state, file, ensure_ascii=False, indent=2)
 
 
 def telegram_request_with_retry(url, data, timeout=60, retries=3):
@@ -44,22 +58,6 @@ def telegram_request_with_retry(url, data, timeout=60, retries=3):
 
     print("Telegram konnte nach mehreren Versuchen nicht senden.")
     return None
-
-
-def send_message(text):
-    telegram_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-
-    telegram_request_with_retry(
-        url=telegram_url,
-        data={
-            "chat_id": CHAT_ID,
-            "text": text[:4096],
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        },
-        timeout=30,
-        retries=3,
-    )
 
 
 def send_document(pdf_url, caption):
@@ -107,33 +105,6 @@ def normalise_url(url):
 
 def clean_text(text):
     return " ".join(text.split()).strip()
-
-
-def get_last_weekend_dates():
-    today = datetime.now(TIMEZONE).date()
-
-    days_since_sunday = (today.weekday() - 6) % 7
-    if days_since_sunday == 0:
-        days_since_sunday = 7
-
-    last_sunday = today - timedelta(days=days_since_sunday)
-    last_saturday = last_sunday - timedelta(days=1)
-
-    return {last_saturday, last_sunday}
-
-
-def extract_event_date(soup):
-    text = clean_text(soup.get_text(" ", strip=True))
-
-    matches = re.findall(r"\d{2}\.\d{2}\.\d{4}", text)
-
-    for date_text in matches:
-        try:
-            return datetime.strptime(date_text, "%d.%m.%Y").date()
-        except ValueError:
-            continue
-
-    return None
 
 
 def extract_number_after(label, text):
@@ -215,33 +186,45 @@ def is_schlussrangliste(link_text, href):
     )
 
 
-def is_statistik_6(link_text, href):
+def is_statistik_1_to_6(link_text, href):
     text = f"{link_text} {href}".lower()
 
     if "zwischenrangliste" in text:
         return False
 
+    if "statistik" not in text and "-st.pdf" not in text and "_st.pdf" not in text:
+        return False
+
     patterns = [
-        r"statistik nach 6",
-        r"statistik nach sechs",
+        r"statistik nach einem gang",
+        r"statistik nach 1 gang",
+        r"statistik[_\- ]?1",
+        r"statistik nach 2 g",
+        r"statistik[_\- ]?2",
+        r"statistik nach 3 g",
+        r"statistik[_\- ]?3",
+        r"statistik nach 4 g",
+        r"statistik[_\- ]?4",
+        r"statistik nach 5 g",
+        r"statistik[_\- ]?5",
+        r"statistik nach 6 g",
         r"statistik[_\- ]?6",
-        r"6\.?\s*gang",
-        r"6\.?\s*gängen",
-        r"6\.?\s*gaengen",
-        r"[-_]st6",
-        r"[-_]st_6",
-        r"statistik-6",
-        r"statistik_6",
+        r"[-_]st\.pdf",
     ]
 
     return any(re.search(pattern, text) for pattern in patterns)
 
 
 def should_send_pdf(link_text, href):
-    if is_schlussrangliste(link_text, href):
+    text = f"{link_text} {href}".lower()
+
+    if "zwischenrangliste" in text:
+        return False
+
+    if is_statistik_1_to_6(link_text, href):
         return True
 
-    if is_statistik_6(link_text, href):
+    if is_schlussrangliste(link_text, href):
         return True
 
     return False
@@ -251,7 +234,7 @@ def get_icon(link_text, href):
     if is_schlussrangliste(link_text, href):
         return "🏁"
 
-    if is_statistik_6(link_text, href):
+    if is_statistik_1_to_6(link_text, href):
         return "📈"
 
     return "📄"
@@ -260,29 +243,44 @@ def get_icon(link_text, href):
 def get_pdf_title(link_text, href):
     title = clean_text(link_text)
 
+    if title:
+        return title
+
+    filename = href.split("/")[-1].replace(".pdf", "")
+
     if is_schlussrangliste(link_text, href):
         return "Schlussrangliste"
 
-    if is_statistik_6(link_text, href):
+    if "statistik_1" in filename.lower():
+        return "Statistik nach einem Gang"
+
+    if "statistik_2" in filename.lower():
+        return "Statistik nach 2 Gängen"
+
+    if "statistik_3" in filename.lower():
+        return "Statistik nach 3 Gängen"
+
+    if "statistik_4" in filename.lower():
+        return "Statistik nach 4 Gängen"
+
+    if "statistik_5" in filename.lower():
+        return "Statistik nach 5 Gängen"
+
+    if "statistik_6" in filename.lower():
         return "Statistik nach 6 Gängen"
 
-    if title:
-        return title
+    if is_statistik_1_to_6(link_text, href):
+        return "Statistik"
 
     return "PDF"
 
 
-def build_pdf_caption(icon, pdf_title, fest_name, event_date, festinfos):
-    date_text = event_date.strftime("%d.%m.%Y") if event_date else ""
-
+def build_pdf_caption(icon, pdf_title, fest_name, festinfos):
     lines = [
         f"{icon} <b>{escape(pdf_title)}</b>",
         "",
         f"📍 <b>{escape(fest_name)}</b>",
     ]
-
-    if date_text:
-        lines.append(f"🗓 {date_text}")
 
     if festinfos:
         lines.append("")
@@ -322,22 +320,13 @@ def collect_ranglisten_detail_links():
     return links[:MAX_DETAIL_PAGES]
 
 
-def process_ranglisten_detail_page(detail_url, target_dates):
+def process_ranglisten_detail_page(detail_url, state):
     soup = get_soup(detail_url)
-
-    event_date = extract_event_date(soup)
-
-    if event_date not in target_dates:
-        print(f"Ignoriert, nicht vergangenes Wochenende: {detail_url} / Datum: {event_date}")
-        return 0
 
     fest_name = extract_fest_name(soup)
     festinfos = extract_festinfos(soup)
 
-    print(f"Fest vom vergangenen Wochenende erkannt: {fest_name} / {event_date}")
-
-    sent_count = 0
-    sent_urls = set()
+    print(f"Fest erkannt: {fest_name}")
 
     for link in soup.find_all("a", href=True):
         href = link["href"]
@@ -352,49 +341,41 @@ def process_ranglisten_detail_page(detail_url, target_dates):
 
         pdf_url = normalise_url(href)
 
-        if pdf_url in sent_urls:
+        if pdf_url in state["sent_pdfs"]:
+            print(f"Bereits gesendet: {pdf_url}")
             continue
-
-        sent_urls.add(pdf_url)
 
         icon = get_icon(link_text, href)
         pdf_title = get_pdf_title(link_text, href)
 
         caption = build_pdf_caption(
-            icon=icon,
-            pdf_title=pdf_title,
-            fest_name=fest_name,
-            event_date=event_date,
-            festinfos=festinfos,
+            icon,
+            pdf_title,
+            fest_name,
+            festinfos,
         )
 
         print(f"Sende PDF: {pdf_title} -> {pdf_url}")
 
         send_document(pdf_url, caption)
 
-        sent_count += 1
+        state["sent_pdfs"].append(pdf_url)
+        save_state(state)
+
         time.sleep(2)
 
-    return sent_count
 
+def check_ranglisten(state):
+    detail_links = collect_ranglisten_detail_links()
 
-def send_intro_message(target_dates):
-    sorted_dates = sorted(target_dates)
+    print(f"Gefundene Ranglisten-Detailseiten: {len(detail_links)}")
 
-    message = f"""
-🤼 <b>Schwingen Live ist zurück</b>
-
-Hier folgen nochmals die Schlussranglisten und die Statistik nach 6 Gängen vom vergangenen Wochenende.
-
-📅 <b>Wochenende:</b> {sorted_dates[0].strftime('%d.%m.%Y')} / {sorted_dates[1].strftime('%d.%m.%Y')}
-
-Ab sofort sollte wieder alles wie gewohnt laufen 💪
-
-Danke für eure Geduld und viel Spass im Sägemehl!
-""".strip()
-
-    send_message(message)
-    time.sleep(2)
+    for detail_url in detail_links:
+        try:
+            print(f"Pruefe Rangliste: {detail_url}")
+            process_ranglisten_detail_page(detail_url, state)
+        except Exception as exc:
+            print(f"Fehler bei {detail_url}: {exc}")
 
 
 def main():
@@ -407,28 +388,13 @@ def main():
     if not SCRAPER_API_KEY:
         raise ValueError("SCRAPER_API_KEY fehlt.")
 
-    print("Starte einmaligen Nachversand vom vergangenen Wochenende...")
+    state = load_state()
 
-    target_dates = get_last_weekend_dates()
+    print("Starte Testlauf Ranglisten und Statistiken...")
 
-    print(f"Ziel-Daten: {[date.strftime('%Y-%m-%d') for date in sorted(target_dates)]}")
+    check_ranglisten(state)
 
-    send_intro_message(target_dates)
-
-    detail_links = collect_ranglisten_detail_links()
-
-    print(f"Gefundene Ranglisten-Detailseiten: {len(detail_links)}")
-
-    total_sent = 0
-
-    for detail_url in detail_links:
-        try:
-            print(f"Pruefe Rangliste: {detail_url}")
-            total_sent += process_ranglisten_detail_page(detail_url, target_dates)
-        except Exception as exc:
-            print(f"Fehler bei {detail_url}: {exc}")
-
-    print(f"Einmaliger Nachversand beendet. Gesendete PDFs: {total_sent}")
+    print("Botlauf beendet.")
 
 
 if __name__ == "__main__":
