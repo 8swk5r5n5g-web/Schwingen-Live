@@ -1,7 +1,5 @@
 import os
-import json
 from urllib.parse import urlencode
-
 import requests
 from bs4 import BeautifulSoup
 
@@ -10,10 +8,8 @@ CHAT_ID = os.getenv("CHAT_ID")
 SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY")
 
 BASE_URL = "https://esv.ch"
-RANGLISTEN_URL = f"{BASE_URL}/ranglisten/"
+RANGLISTEN_URL = "https://esv.ch/ranglisten/"
 SCRAPER_API_BASE = "https://api.scraperapi.com"
-
-STATE_FILE = "state.json"
 
 MAX_DETAIL_PAGES = 5
 
@@ -24,109 +20,81 @@ ALLOWED_PDF_KEYWORDS = [
 ]
 
 
-def send_message(text: str) -> None:
+def send_message(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-
-    response = requests.post(
-        url,
-        data={
-            "chat_id": CHAT_ID,
-            "text": text,
-        },
-        timeout=30,
-    )
-
-    print(response.text)
-    response.raise_for_status()
+    r = requests.post(url, data={"chat_id": CHAT_ID, "text": text}, timeout=30)
+    print(r.text)
+    r.raise_for_status()
 
 
-def send_document(file_url: str, caption: str) -> None:
+def send_document(pdf_url, caption):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-
-    response = requests.post(
+    r = requests.post(
         url,
         data={
             "chat_id": CHAT_ID,
-            "document": file_url,
+            "document": pdf_url,
             "caption": caption[:1024],
         },
         timeout=60,
     )
+    print(r.text)
+    r.raise_for_status()
 
-    print(response.text)
-    response.raise_for_status()
 
-
-def build_scraperapi_url(target_url: str) -> str:
+def scraper_url(target_url):
     params = {
         "api_key": SCRAPER_API_KEY,
         "url": target_url,
-        "render": "true",
+        "render": "false",
     }
-
     return f"{SCRAPER_API_BASE}?{urlencode(params)}"
 
 
-def get_soup(url: str) -> BeautifulSoup:
-    scraper_url = build_scraperapi_url(url)
-
-    response = requests.get(scraper_url, timeout=90)
-
-    print(f"GET {url} -> {response.status_code}")
-
-    response.raise_for_status()
-
-    return BeautifulSoup(response.text, "html.parser")
+def get_soup(url):
+    r = requests.get(scraper_url(url), timeout=45)
+    print(f"GET via ScraperAPI: {url} -> {r.status_code}")
+    r.raise_for_status()
+    return BeautifulSoup(r.text, "html.parser")
 
 
-def normalise_url(url: str) -> str:
-    if url.startswith("http://") or url.startswith("https://"):
+def normalise_url(url):
+    if url.startswith("http"):
         return url
-
     return requests.compat.urljoin(BASE_URL, url)
 
 
-def detect_pdf_type(name_or_url: str) -> str:
-    value = name_or_url.lower()
-
-    if "schlussrangliste" in value:
-        return "🏁 Schlussrangliste"
-
-    if "zwischenrangliste" in value:
-        return "📊 Zwischenrangliste"
-
-    if "statistik" in value:
-        return "📈 Statistik"
-
-    return "📄 PDF"
-
-
-def is_allowed_pdf(href: str, link_text: str) -> bool:
-    combined = f"{href} {link_text}".lower()
-
-    return any(
-        keyword in combined
-        for keyword in ALLOWED_PDF_KEYWORDS
-    )
-
-
-def extract_title(soup: BeautifulSoup) -> str:
+def extract_title(soup):
     h1 = soup.find("h1")
-
     if h1:
         return h1.get_text(" ", strip=True)
-
     return "Schwingfest"
 
 
-def collect_ranglisten_detail_links() -> list[str]:
+def detect_pdf_type(text):
+    t = text.lower()
+    if "schlussrangliste" in t:
+        return "🏁 Schlussrangliste"
+    if "zwischenrangliste" in t:
+        return "📊 Zwischenrangliste"
+    if "statistik" in t:
+        return "📈 Statistik"
+    return "📄 PDF"
+
+
+def is_allowed_pdf(href, link_text):
+    combined = f"{href} {link_text}".lower()
+    return any(k in combined for k in ALLOWED_PDF_KEYWORDS)
+
+
+def collect_detail_links():
     soup = get_soup(RANGLISTEN_URL)
 
     links = []
     seen = set()
 
-    for link in soup.find_all("a", href=True):
-        href = link["href"]
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
 
         if "/ranglisten/" not in href:
             continue
@@ -136,63 +104,63 @@ def collect_ranglisten_detail_links() -> list[str]:
         if full_url.rstrip("/") == RANGLISTEN_URL.rstrip("/"):
             continue
 
+        if "?jahr=" in full_url:
+            continue
+
         if full_url in seen:
             continue
 
         seen.add(full_url)
         links.append(full_url)
 
-    return links
+    return links[:MAX_DETAIL_PAGES]
 
 
-def process_detail_page(detail_url: str) -> None:
+def process_detail_page(detail_url):
     soup = get_soup(detail_url)
-
     title = extract_title(soup)
 
-    send_message(f"🧪 TESTE:\n{title}")
+    send_message(f"🧪 Teste Ranglisten:\n{title}")
 
-    for link in soup.find_all("a", href=True):
-        href = link["href"]
-        link_text = link.get_text(" ", strip=True)
+    found = 0
+
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        link_text = a.get_text(" ", strip=True)
 
         if ".pdf" not in href.lower():
             continue
 
         if not is_allowed_pdf(href, link_text):
-            print(f"IGNORIERT: {link_text}")
+            print(f"Ignoriert: {link_text} / {href}")
             continue
 
         pdf_url = normalise_url(href)
-
         pdf_type = detect_pdf_type(f"{href} {link_text}")
 
-        caption = (
-            f"{pdf_type}\n\n"
-            f"📍 {title}\n"
-            f"📝 {link_text}"
-        )
+        caption = f"{pdf_type}\n\n📍 {title}"
+        if link_text:
+            caption += f"\n📝 {link_text}"
 
         send_document(pdf_url, caption)
+        found += 1
+
+    if found == 0:
+        print(f"Keine passenden PDFs gefunden: {title}")
 
 
 def main():
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN fehlt.")
-
     if not CHAT_ID:
         raise ValueError("CHAT_ID fehlt.")
-
     if not SCRAPER_API_KEY:
         raise ValueError("SCRAPER_API_KEY fehlt.")
 
     send_message("🚀 Testlauf gestartet")
 
-    detail_links = collect_ranglisten_detail_links()
-
-    detail_links = detail_links[:MAX_DETAIL_PAGES]
-
-    print(detail_links)
+    detail_links = collect_detail_links()
+    print(f"Gefundene Detailseiten: {len(detail_links)}")
 
     for detail_url in detail_links:
         try:
