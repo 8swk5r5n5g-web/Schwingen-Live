@@ -19,7 +19,7 @@ RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
 SCRAPER_API_BASE = "https://api.scraperapi.com"
 
 STATE_FILE = "state.json"
-MAX_DETAIL_PAGES = 200
+MAX_DETAIL_PAGES = 300
 
 
 def load_state():
@@ -29,14 +29,8 @@ def load_state():
     else:
         state = {}
 
-    if "pdf_hashes" not in state:
-        state["pdf_hashes"] = {}
-
-    if "sent_pdfs" in state:
-        for url in state["sent_pdfs"]:
-            if url not in state["pdf_hashes"]:
-                state["pdf_hashes"][url] = ""
-        del state["sent_pdfs"]
+    if "known_pdfs" not in state:
+        state["known_pdfs"] = {}
 
     if "baseline_done" not in state:
         state["baseline_done"] = False
@@ -49,61 +43,12 @@ def save_state(state):
         json.dump(state, file, ensure_ascii=False, indent=2)
 
 
-def telegram_request_with_retry(url, data, timeout=90, retries=3):
-    for attempt in range(1, retries + 1):
-        try:
-            response = requests.post(url, data=data, timeout=timeout)
-            print(response.text)
-
-            if response.status_code == 200:
-                return response
-
-            if response.status_code == 429:
-                try:
-                    retry_after = response.json().get("parameters", {}).get("retry_after", 30)
-                except Exception:
-                    retry_after = 30
-
-                print(f"Telegram Rate Limit erreicht. Warte {retry_after} Sekunden...")
-                time.sleep(retry_after + 1)
-                continue
-
-            response.raise_for_status()
-
-        except requests.exceptions.RequestException as exc:
-            wait_time = attempt * 5
-            print(f"Telegram Fehler bei Versuch {attempt}: {exc}")
-            print(f"Warte {wait_time} Sekunden...")
-            time.sleep(wait_time)
-
-    print("Telegram konnte nach mehreren Versuchen nicht senden.")
-    return None
-
-
-def send_document(pdf_url, caption):
-    telegram_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-
-    telegram_request_with_retry(
-        url=telegram_url,
-        data={
-            "chat_id": CHAT_ID,
-            "document": pdf_url,
-            "caption": caption[:1024],
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        },
-        timeout=90,
-        retries=3,
-    )
-
-
 def scraper_url(target_url):
     params = {
         "api_key": SCRAPER_API_KEY,
         "url": target_url,
         "render": "false",
     }
-
     return f"{SCRAPER_API_BASE}?{urlencode(params)}"
 
 
@@ -165,7 +110,6 @@ def remove_date_from_text(text):
 
 def is_jung_or_nachwuchs(text):
     text = text.lower()
-
     blocked_words = [
         "jung",
         "nachwuchs",
@@ -176,7 +120,6 @@ def is_jung_or_nachwuchs(text):
         "schueler",
         "knaben",
     ]
-
     return any(word in text for word in blocked_words)
 
 
@@ -212,10 +155,10 @@ def extract_location_from_overview(overview_text):
     return ""
 
 
-def collect_all_ranglisten_detail_links():
+def collect_active_fests():
     soup = get_soup(RANGLISTEN_URL)
 
-    links = []
+    fests = []
     seen = set()
 
     for link in soup.find_all("a", href=True):
@@ -246,64 +189,17 @@ def collect_all_ranglisten_detail_links():
 
         seen.add(full_url)
 
-        links.append(
-            {
-                "detail_url": full_url,
-                "overview_text": overview_text,
-                "date_text": extract_date_from_text(overview_text),
-                "fest_name": extract_fest_name_from_overview(overview_text),
-                "location": extract_location_from_overview(overview_text),
-            }
-        )
+        fests.append({
+            "detail_url": full_url,
+            "overview_text": overview_text,
+            "date_text": extract_date_from_text(overview_text),
+            "fest_name": extract_fest_name_from_overview(overview_text),
+            "location": extract_location_from_overview(overview_text),
+        })
 
-    print(f"Gefundene Aktiv-Ranglisten-Detailseiten total: {len(links)}")
+    print(f"Gefundene Aktiv-Feste: {len(fests)}")
 
-    return links[:MAX_DETAIL_PAGES]
-
-
-def extract_fest_name_from_detail(soup):
-    h1 = soup.find("h1")
-
-    if h1:
-        title = clean_text(h1.get_text(" ", strip=True))
-
-        if title and "Eidgenössischer Schwingerverband" not in title:
-            return title
-
-    text = clean_text(soup.get_text(" ", strip=True))
-
-    patterns = [
-        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Kantonales Schwingfest)",
-        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwingfest)",
-        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwinget)",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text)
-
-        if match:
-            return clean_text(match.group(1))
-
-    return ""
-
-
-def extract_location_from_detail(soup):
-    text = clean_text(soup.get_text(" ", strip=True))
-
-    patterns = [
-        r"\bOrt[:\s]+([A-ZÄÖÜa-zäöü0-9 .'\-]+)",
-        r"\bAustragungsort[:\s]+([A-ZÄÖÜa-zäöü0-9 .'\-]+)",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text)
-
-        if match:
-            location = clean_text(match.group(1))
-            location = re.split(r"\s{2,}| Datum | Rangliste | Anzahl ", location)[0]
-            return clean_text(location)
-
-    return ""
+    return fests[:MAX_DETAIL_PAGES]
 
 
 def is_blocked_pdf(href, link_text=""):
@@ -331,16 +227,11 @@ def is_schlussrangliste(href, link_text=""):
     if is_blocked_pdf(href, link_text):
         return False
 
-    if "schlussrangliste" in combined:
-        return True
-
-    if combined.endswith("-rl.pdf"):
-        return True
-
-    if "_rl.pdf" in combined:
-        return True
-
-    return False
+    return (
+        "schlussrangliste" in combined
+        or combined.endswith("-rl.pdf")
+        or "_rl.pdf" in combined
+    )
 
 
 def is_statistik(href, link_text=""):
@@ -349,19 +240,14 @@ def is_statistik(href, link_text=""):
     if is_blocked_pdf(href, link_text):
         return False
 
-    if "statistik" in combined:
-        return True
-
-    if combined.endswith("-st.pdf"):
-        return True
-
-    if "_st.pdf" in combined:
-        return True
-
-    return False
+    return (
+        "statistik" in combined
+        or combined.endswith("-st.pdf")
+        or "_st.pdf" in combined
+    )
 
 
-def should_send_pdf(href, link_text=""):
+def should_track_pdf(href, link_text=""):
     return is_schlussrangliste(href, link_text) or is_statistik(href, link_text)
 
 
@@ -372,9 +258,7 @@ def get_pdf_title(href, link_text=""):
         return "Schlussrangliste"
 
     if is_statistik(href, text):
-        if text:
-            return text
-        return "Statistik"
+        return text if text else "Statistik"
 
     return "PDF"
 
@@ -387,9 +271,7 @@ def download_pdf_for_hash(pdf_url, retries=3):
                 timeout=90,
                 headers={"User-Agent": "Mozilla/5.0"},
             )
-
             print(f"PDF Download Versuch {attempt}: {pdf_url} -> {response.status_code}")
-
             response.raise_for_status()
             return response.content
 
@@ -407,48 +289,131 @@ def get_pdf_hash(pdf_url):
     return hashlib.sha256(pdf_content).hexdigest()
 
 
-def pdf_is_new_or_updated(pdf_url, pdf_hash, state):
-    old_hash = state["pdf_hashes"].get(pdf_url)
+def telegram_request_with_retry(url, data, timeout=90, retries=3):
+    for attempt in range(1, retries + 1):
+        try:
+            response = requests.post(url, data=data, timeout=timeout)
+            print(response.text)
 
-    if old_hash is None:
-        state["pdf_hashes"][pdf_url] = pdf_hash
-        save_state(state)
-        return True
+            if response.status_code == 200:
+                return response
 
-    if old_hash != pdf_hash:
-        state["pdf_hashes"][pdf_url] = pdf_hash
-        save_state(state)
-        return True
+            if response.status_code == 429:
+                try:
+                    retry_after = response.json().get("parameters", {}).get("retry_after", 30)
+                except Exception:
+                    retry_after = 30
 
-    return False
+                print(f"Telegram Rate Limit erreicht. Warte {retry_after} Sekunden...")
+                time.sleep(retry_after + 1)
+                continue
+
+            response.raise_for_status()
+
+        except requests.exceptions.RequestException as exc:
+            wait_time = attempt * 5
+            print(f"Telegram Fehler bei Versuch {attempt}: {exc}")
+            print(f"Warte {wait_time} Sekunden...")
+            time.sleep(wait_time)
+
+    print("Telegram konnte nach mehreren Versuchen nicht senden.")
+    return None
+
+
+def send_document(pdf_url, caption):
+    telegram_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
+
+    telegram_request_with_retry(
+        url=telegram_url,
+        data={
+            "chat_id": CHAT_ID,
+            "document": pdf_url,
+            "caption": caption[:1024],
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        },
+        timeout=90,
+        retries=3,
+    )
 
 
 def build_pdf_caption(pdf_title, fest_name, date_text, location, pdf_url):
-    lines = [
+    return "\n".join([
         f"Datum: {escape(date_text) if date_text else '-'}",
         f"Fest: {escape(fest_name) if fest_name else '-'}",
         f"Ort: {escape(location) if location else '-'}",
         f"Dokument: {escape(pdf_title) if pdf_title else '-'}",
         f"PDF Datei: {escape(pdf_url)}",
-    ]
-
-    return "\n".join(lines)
+    ])
 
 
-def process_detail_page(entry, state):
-    soup = get_soup(entry["detail_url"])
+def process_pdf(pdf_url, pdf_hash, pdf_title, fest, state):
+    old_entry = state["known_pdfs"].get(pdf_url)
 
-    fest_name = entry.get("fest_name") or extract_fest_name_from_detail(soup) or "Schwingfest"
-    date_text = entry.get("date_text")
+    if old_entry is None:
+        state["known_pdfs"][pdf_url] = {
+            "hash": pdf_hash,
+            "title": pdf_title,
+            "fest": fest.get("fest_name", ""),
+            "date": fest.get("date_text", ""),
+            "location": fest.get("location", ""),
+        }
+        save_state(state)
 
-    if not date_text:
-        date_text = extract_date_from_text(clean_text(soup.get_text(" ", strip=True)))
+        if state["baseline_done"]:
+            print(f"Neue PDF nach Bot-Start erkannt: {pdf_url}")
 
-    location = entry.get("location") or extract_location_from_detail(soup)
+            caption = build_pdf_caption(
+                pdf_title=pdf_title,
+                fest_name=fest.get("fest_name", ""),
+                date_text=fest.get("date_text", ""),
+                location=fest.get("location", ""),
+                pdf_url=pdf_url,
+            )
 
-    print(f"Aktiv-Fest erkannt: {fest_name} / {date_text} / {location}")
+            send_document(pdf_url, caption)
+        else:
+            print(f"Baseline speichert bestehende PDF ohne Senden: {pdf_url}")
 
-    found_relevant_pdf = False
+        return
+
+    old_hash = old_entry.get("hash", "")
+
+    if old_hash != pdf_hash:
+        state["known_pdfs"][pdf_url]["hash"] = pdf_hash
+        save_state(state)
+
+        if state["baseline_done"]:
+            print(f"Aktualisierte PDF erkannt: {pdf_url}")
+
+            caption = build_pdf_caption(
+                pdf_title=pdf_title,
+                fest_name=fest.get("fest_name", ""),
+                date_text=fest.get("date_text", ""),
+                location=fest.get("location", ""),
+                pdf_url=pdf_url,
+            )
+
+            send_document(pdf_url, caption)
+        else:
+            print(f"Baseline speichert aktualisierten Hash ohne Senden: {pdf_url}")
+
+        return
+
+    print(f"Unverändert: {pdf_url}")
+
+
+def process_fest(fest, state):
+    soup = get_soup(fest["detail_url"])
+
+    print(
+        f"Aktiv-Fest scannen: "
+        f"{fest.get('fest_name', '-')} / "
+        f"{fest.get('date_text', '-')} / "
+        f"{fest.get('location', '-')}"
+    )
+
+    found = 0
 
     for link in soup.find_all("a", href=True):
         href = link["href"]
@@ -457,11 +422,8 @@ def process_detail_page(entry, state):
         if ".pdf" not in href.lower():
             continue
 
-        if not should_send_pdf(href, link_text):
-            print(f"Ignoriert: {href}")
+        if not should_track_pdf(href, link_text):
             continue
-
-        found_relevant_pdf = True
 
         pdf_url = normalise_url(href)
         pdf_title = get_pdf_title(href, link_text)
@@ -469,55 +431,40 @@ def process_detail_page(entry, state):
         try:
             pdf_hash = get_pdf_hash(pdf_url)
         except Exception as exc:
-            print(f"Konnte PDF Hash nicht prüfen: {pdf_url} / {exc}")
+            print(f"Konnte PDF nicht prüfen: {pdf_url} / {exc}")
             continue
 
-        is_new_or_updated = pdf_is_new_or_updated(pdf_url, pdf_hash, state)
+        found += 1
 
-        if not is_new_or_updated:
-            print(f"Unverändert: {pdf_url}")
-            continue
-
-        if not state["baseline_done"]:
-            print(f"Baseline: speichere ohne Senden: {pdf_url}")
-            continue
-
-        caption = build_pdf_caption(
-            pdf_title=pdf_title,
-            fest_name=fest_name,
-            date_text=date_text,
-            location=location,
+        process_pdf(
             pdf_url=pdf_url,
+            pdf_hash=pdf_hash,
+            pdf_title=pdf_title,
+            fest=fest,
+            state=state,
         )
 
-        print(f"Sende neue oder aktualisierte PDF: {pdf_title} -> {pdf_url}")
+        time.sleep(1)
 
-        send_document(pdf_url, caption)
-
-        time.sleep(2)
-
-    if not found_relevant_pdf:
-        print(f"Keine Statistik oder Schlussrangliste gefunden: {entry['detail_url']}")
+    print(f"Relevante PDFs gefunden: {found}")
 
 
 def check_ranglisten(state):
-    entries = collect_all_ranglisten_detail_links()
+    fests = collect_active_fests()
 
     if not state["baseline_done"]:
-        print("Baseline-Modus: aktueller Stand wird nur gespeichert, nicht gesendet.")
+        print("ERSTER LAUF: Bestehende PDFs werden nur gespeichert, NICHT gesendet.")
 
-    for entry in entries:
+    for fest in fests:
         try:
-            print(f"Pruefe Ranglisten-Fest: {entry['detail_url']}")
-            process_detail_page(entry, state)
-
+            process_fest(fest, state)
         except Exception as exc:
-            print(f"Fehler bei {entry['detail_url']}: {exc}")
+            print(f"Fehler bei {fest['detail_url']}: {exc}")
 
     if not state["baseline_done"]:
         state["baseline_done"] = True
         save_state(state)
-        print("Baseline fertig. Ab dem nächsten Lauf werden neue oder aktualisierte PDFs gesendet.")
+        print("Baseline fertig. Ab jetzt werden nur noch neue oder aktualisierte PDFs gesendet.")
 
 
 def main():
@@ -529,7 +476,7 @@ def main():
 
     state = load_state()
 
-    print("Starte Bot: arls.esv.ch prüfen, nur Aktiv-Feste, Statistik und Schlussrangliste senden...")
+    print("Starte Bot: Aktiv-Feste scannen, bestehende PDFs ignorieren, nur neue/aktualisierte PDFs senden.")
 
     check_ranglisten(state)
 
