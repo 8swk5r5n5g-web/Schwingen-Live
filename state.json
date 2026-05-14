@@ -38,5 +38,8 @@
     "https://esv.ch/documents/ranglisten/zs2/2026-05-14_Fete_Regionale_Le_Mouret2-ST.pdf"
   ],
   "sent_results": [],
-  "sent_agenda_dates": []
+  "sent_agenda_dates": [],
+  "baseline_dates": [
+    "2026-05-14"
+  ]
 }
