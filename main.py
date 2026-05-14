@@ -96,9 +96,7 @@ def extract_date_from_text(text):
     if not match:
         return ""
 
-    date_text = match.group(0)
-    date_text = date_text.replace("..", ".")
-    return date_text
+    return match.group(0).replace("..", ".")
 
 
 def parse_date(date_text):
@@ -169,18 +167,15 @@ def collect_active_fests():
         parts = data["parts"]
 
         if len(parts) < 5:
-            print(f"Ignoriert, zu wenig Felder bei Anlass {anlass_id}: {parts}")
             continue
 
         date_text = extract_date_from_text(parts[0])
         fest_name = clean_text(parts[1])
         category = clean_text(parts[2]).lower()
         location = clean_text(parts[3])
-
         row_text = clean_text(" ".join(parts))
 
         if not date_text:
-            print(f"Ignoriert, kein Datum bei Anlass {anlass_id}: {parts}")
             continue
 
         if category != "aktiv":
@@ -199,9 +194,6 @@ def collect_active_fests():
 
     if not entries:
         print("Keine Aktiv-Feste gefunden.")
-        print(f"Debug: Anzahl gruppierte Anlässe: {len(grouped)}")
-        for anlass_id, data in list(grouped.items())[:10]:
-            print(f"Debug Anlass {anlass_id}: {data['parts']}")
         return []
 
     newest_date = max(
@@ -231,23 +223,75 @@ def collect_active_fests():
     return filtered[:MAX_DETAIL_PAGES]
 
 
+def extract_number_after(label, text):
+    pattern = rf"{re.escape(label)}\s+(\d+)"
+    match = re.search(pattern, text, flags=re.IGNORECASE)
+
+    if match:
+        return match.group(1)
+
+    return ""
+
+
+def extract_fest_website(soup):
+    for link in soup.find_all("a", href=True):
+        href = link["href"].strip()
+        text = clean_text(link.get_text(" ", strip=True))
+
+        if href.startswith("http") and "arls.esv.ch" not in href and "esv.ch" not in href:
+            return href
+
+        if text.startswith("http") and "arls.esv.ch" not in text and "esv.ch" not in text:
+            return text
+
+    return ""
+
+
+def extract_detail_infos(soup):
+    page_text = clean_text(soup.get_text(" ", strip=True))
+
+    schwinger = extract_number_after("Anzahl Schwinger", page_text)
+    website = extract_fest_website(soup)
+
+    return {
+        "schwinger": schwinger,
+        "website": website,
+    }
+
+
+def is_pdf_link(href):
+    href_lower = href.lower()
+
+    return (
+        ".pdf" in href_lower
+        or "pdf" in href_lower
+        or "download" in href_lower
+        or "rangliste" in href_lower
+    )
+
+
 def is_blocked_pdf(href, link_text=""):
     combined = f"{href} {link_text}".lower()
 
     blocked_words = [
         "zwischenrangliste",
         "zwischenrang",
-        "/zs",
-        "_zs",
-        "-zs",
-        "gangliste",
-        "notizblatt",
-        "einteilung",
         "startliste",
+        "einteilung",
+        "notizblatt",
         "paarung",
     ]
 
     return any(word in combined for word in blocked_words)
+
+
+def is_statistik(href, link_text=""):
+    combined = f"{href} {link_text}".lower()
+
+    if is_blocked_pdf(href, link_text):
+        return False
+
+    return "statistik" in combined
 
 
 def is_schlussrangliste(href, link_text=""):
@@ -258,36 +302,27 @@ def is_schlussrangliste(href, link_text=""):
 
     return (
         "schlussrangliste" in combined
+        or "schlussrang" in combined
+        or combined.strip() == "rangliste"
         or combined.endswith("-rl.pdf")
         or "_rl.pdf" in combined
     )
 
 
-def is_statistik(href, link_text=""):
-    combined = f"{href} {link_text}".lower()
-
-    if is_blocked_pdf(href, link_text):
-        return False
-
-    return (
-        "statistik" in combined
-        or combined.endswith("-st.pdf")
-        or "_st.pdf" in combined
-    )
-
-
 def should_track_pdf(href, link_text=""):
-    return is_schlussrangliste(href, link_text) or is_statistik(href, link_text)
+    return is_statistik(href, link_text) or is_schlussrangliste(href, link_text)
 
 
 def get_pdf_title(href, link_text=""):
     text = clean_text(link_text)
 
-    if is_schlussrangliste(href, text):
-        return "Schlussrangliste"
-
     if is_statistik(href, text):
         return text if text else "Statistik"
+
+    if is_schlussrangliste(href, text):
+        if text and text.lower() != "rangliste":
+            return text
+        return "Schlussrangliste"
 
     return "PDF"
 
@@ -327,7 +362,6 @@ def telegram_request_with_retry(url, data, timeout=90, retries=3):
     for attempt in range(1, retries + 1):
         try:
             response = requests.post(url, data=data, timeout=timeout)
-
             print(response.text)
 
             if response.status_code == 200:
@@ -370,11 +404,16 @@ def send_document(pdf_url, caption):
     )
 
 
-def build_pdf_caption(pdf_title, fest_name, date_text, location, pdf_url):
+def build_pdf_caption(pdf_title, fest, detail_infos, pdf_url):
+    schwinger = detail_infos.get("schwinger", "")
+    website = detail_infos.get("website", "")
+
     lines = [
-        f"Datum: {escape(date_text)}",
-        f"Fest: {escape(fest_name)}",
-        f"Ort: {escape(location)}",
+        f"Datum: {escape(fest.get('date_text', '-'))}",
+        f"Fest: {escape(fest.get('fest_name', '-'))}",
+        f"Ort: {escape(fest.get('location', '-'))}",
+        f"Anzahl Schwinger: {escape(schwinger) if schwinger else '-'}",
+        f"Webseite Fest: {escape(website) if website else '-'}",
         f"Dokument: {escape(pdf_title)}",
         f"PDF Datei: {escape(pdf_url)}",
     ]
@@ -382,7 +421,7 @@ def build_pdf_caption(pdf_title, fest_name, date_text, location, pdf_url):
     return "\n".join(lines)
 
 
-def process_pdf(pdf_url, pdf_hash, pdf_title, fest, state):
+def process_pdf(pdf_url, pdf_hash, pdf_title, fest, detail_infos, state):
     old_entry = state["known_pdfs"].get(pdf_url)
 
     if old_entry is None:
@@ -392,6 +431,8 @@ def process_pdf(pdf_url, pdf_hash, pdf_title, fest, state):
             "fest": fest.get("fest_name", ""),
             "date": fest.get("date_text", ""),
             "location": fest.get("location", ""),
+            "schwinger": detail_infos.get("schwinger", ""),
+            "website": detail_infos.get("website", ""),
         }
 
         save_state(state)
@@ -401,9 +442,8 @@ def process_pdf(pdf_url, pdf_hash, pdf_title, fest, state):
 
             caption = build_pdf_caption(
                 pdf_title=pdf_title,
-                fest_name=fest.get("fest_name", ""),
-                date_text=fest.get("date_text", ""),
-                location=fest.get("location", ""),
+                fest=fest,
+                detail_infos=detail_infos,
                 pdf_url=pdf_url,
             )
 
@@ -417,6 +457,10 @@ def process_pdf(pdf_url, pdf_hash, pdf_title, fest, state):
 
     if old_hash != pdf_hash:
         state["known_pdfs"][pdf_url]["hash"] = pdf_hash
+        state["known_pdfs"][pdf_url]["title"] = pdf_title
+        state["known_pdfs"][pdf_url]["schwinger"] = detail_infos.get("schwinger", "")
+        state["known_pdfs"][pdf_url]["website"] = detail_infos.get("website", "")
+
         save_state(state)
 
         if state["baseline_done"]:
@@ -424,9 +468,8 @@ def process_pdf(pdf_url, pdf_hash, pdf_title, fest, state):
 
             caption = build_pdf_caption(
                 pdf_title=pdf_title,
-                fest_name=fest.get("fest_name", ""),
-                date_text=fest.get("date_text", ""),
-                location=fest.get("location", ""),
+                fest=fest,
+                detail_infos=detail_infos,
                 pdf_url=pdf_url,
             )
 
@@ -439,12 +482,15 @@ def process_pdf(pdf_url, pdf_hash, pdf_title, fest, state):
 
 def process_fest(fest, state):
     soup = get_soup(fest["detail_url"])
+    detail_infos = extract_detail_infos(soup)
 
     print(
         f"Aktiv-Fest scannen: "
         f"{fest['fest_name']} / "
         f"{fest['date_text']} / "
-        f"{fest['location']}"
+        f"{fest['location']} / "
+        f"Schwinger: {detail_infos.get('schwinger', '-')} / "
+        f"Website: {detail_infos.get('website', '-')}"
     )
 
     found = 0
@@ -452,9 +498,6 @@ def process_fest(fest, state):
     for link in soup.find_all("a", href=True):
         href = link["href"]
         link_text = clean_text(link.get_text(" ", strip=True))
-
-        if ".pdf" not in href.lower():
-            continue
 
         if not should_track_pdf(href, link_text):
             continue
@@ -475,6 +518,7 @@ def process_fest(fest, state):
             pdf_hash=pdf_hash,
             pdf_title=pdf_title,
             fest=fest,
+            detail_infos=detail_infos,
             state=state,
         )
 
@@ -510,7 +554,7 @@ def main():
 
     state = load_state()
 
-    print("Starte Bot: Neueste Aktiv-Feste scannen, nur Statistik und Schlussranglisten senden.")
+    print("Starte Bot: Neueste Aktiv-Feste öffnen, Festseiten scannen, nur Statistik und Schlussranglisten senden.")
 
     check_ranglisten(state)
 
