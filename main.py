@@ -5,6 +5,7 @@ import time
 import hashlib
 from html import escape
 from datetime import datetime
+from urllib.parse import urlparse, parse_qs
 
 import requests
 from bs4 import BeautifulSoup
@@ -15,6 +16,7 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 BASE_URL = "https://arls.esv.ch"
 RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
+
 STATE_FILE = "state.json"
 MAX_DETAIL_PAGES = 300
 
@@ -53,7 +55,7 @@ def get_page(url, retries=3):
                 },
             )
 
-            print(f"GET direkt Versuch {attempt}: {url} -> {response.status_code}")
+            print(f"GET Versuch {attempt}: {url} -> {response.status_code}")
             response.raise_for_status()
             return response.text
 
@@ -79,19 +81,28 @@ def normalise_url(url):
 
 
 def clean_text(text):
-    return " ".join(text.replace("\xa0", " ").replace(" .", ".").split()).strip()
+    return " ".join(
+        text.replace("\xa0", " ")
+        .replace(" .", ".")
+        .replace(". ", ".")
+        .split()
+    ).strip()
 
 
 def extract_date_from_text(text):
+    text = clean_text(text)
     match = re.search(r"\d{2}\.\d{2}\.?\d{4}", text)
 
     if not match:
         return ""
 
-    date_text = clean_text(match.group(0))
-    date_text = date_text.replace(" .", ".")
-    date_text = date_text.replace(". ", ".")
+    date_text = match.group(0)
+    date_text = date_text.replace("..", ".")
     return date_text
+
+
+def parse_date(date_text):
+    return datetime.strptime(date_text, "%d.%m.%Y")
 
 
 def is_jung_or_nachwuchs(text):
@@ -111,88 +122,91 @@ def is_jung_or_nachwuchs(text):
     return any(word in text for word in blocked_words)
 
 
-def parse_overview_text(text):
-    text = clean_text(text)
+def get_anlass_id(url):
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    values = query.get("anlass", [])
 
-    date_text = extract_date_from_text(text)
+    if not values:
+        return ""
 
-    if not date_text:
-        return None
-
-    without_date = clean_text(text.replace(date_text, ""))
-    without_date = without_date.replace("Rangliste", "")
-    without_date = clean_text(without_date)
-
-    parts = without_date.split()
-    lower_parts = [part.lower() for part in parts]
-
-    if "aktiv" not in lower_parts:
-        return None
-
-    aktiv_index = lower_parts.index("aktiv")
-
-    fest_name = clean_text(" ".join(parts[:aktiv_index]))
-    location = clean_text(" ".join(parts[aktiv_index + 1:]))
-
-    if not fest_name:
-        return None
-
-    return {
-        "date_text": date_text,
-        "fest_name": fest_name,
-        "location": location,
-    }
+    return values[0]
 
 
 def collect_active_fests():
     soup = get_soup(RANGLISTEN_URL)
 
-    entries = []
-    seen_urls = set()
+    grouped = {}
 
     for link in soup.find_all("a", href=True):
         href = link["href"]
-        detail_url = normalise_url(href)
+        full_url = normalise_url(href)
 
-        if "ranglisten" not in detail_url:
+        if "anlass=" not in full_url:
             continue
 
-        if "anlass=" not in detail_url:
+        anlass_id = get_anlass_id(full_url)
+
+        if not anlass_id:
             continue
 
-        if detail_url in seen_urls:
+        text = clean_text(link.get_text(" ", strip=True))
+
+        if not text:
             continue
 
-        parent_text = clean_text(link.parent.get_text(" ", strip=True))
+        if anlass_id not in grouped:
+            grouped[anlass_id] = {
+                "detail_url": full_url,
+                "parts": [],
+            }
 
-        if "aktiv" not in parent_text.lower():
+        grouped[anlass_id]["parts"].append(text)
+
+    entries = []
+
+    for anlass_id, data in grouped.items():
+        parts = data["parts"]
+
+        if len(parts) < 5:
+            print(f"Ignoriert, zu wenig Felder bei Anlass {anlass_id}: {parts}")
             continue
 
-        if is_jung_or_nachwuchs(parent_text):
+        date_text = extract_date_from_text(parts[0])
+        fest_name = clean_text(parts[1])
+        category = clean_text(parts[2]).lower()
+        location = clean_text(parts[3])
+
+        row_text = clean_text(" ".join(parts))
+
+        if not date_text:
+            print(f"Ignoriert, kein Datum bei Anlass {anlass_id}: {parts}")
             continue
 
-        parsed = parse_overview_text(parent_text)
-
-        if not parsed:
+        if category != "aktiv":
             continue
 
-        seen_urls.add(detail_url)
+        if is_jung_or_nachwuchs(row_text):
+            continue
 
         entries.append({
-            "detail_url": detail_url,
-            "overview_text": parent_text,
-            "date_text": parsed["date_text"],
-            "fest_name": parsed["fest_name"],
-            "location": parsed["location"],
+            "detail_url": data["detail_url"],
+            "overview_text": row_text,
+            "date_text": date_text,
+            "fest_name": fest_name,
+            "location": location,
         })
 
     if not entries:
         print("Keine Aktiv-Feste gefunden.")
+        print(f"Debug: Anzahl gruppierte Anlässe: {len(grouped)}")
+        for anlass_id, data in list(grouped.items())[:10]:
+            print(f"Debug Anlass {anlass_id}: {data['parts']}")
         return []
 
     newest_date = max(
         entries,
-        key=lambda entry: datetime.strptime(entry["date_text"], "%d.%m.%Y")
+        key=lambda entry: parse_date(entry["date_text"])
     )["date_text"]
 
     filtered = [
@@ -201,15 +215,17 @@ def collect_active_fests():
         if entry["date_text"] == newest_date
     ]
 
+    print(f"Alle Aktiv-Feste gefunden: {len(entries)}")
     print(f"Neuestes Datum auf der Seite: {newest_date}")
-    print(f"Gefundene Aktiv-Feste mit neuestem Datum: {len(filtered)}")
+    print(f"Aktiv-Feste mit neuestem Datum: {len(filtered)}")
 
     for fest in filtered:
         print(
             f"Fest gefunden: "
             f"{fest['fest_name']} / "
             f"{fest['date_text']} / "
-            f"{fest['location']}"
+            f"{fest['location']} / "
+            f"{fest['detail_url']}"
         )
 
     return filtered[:MAX_DETAIL_PAGES]
@@ -271,10 +287,7 @@ def get_pdf_title(href, link_text=""):
         return "Schlussrangliste"
 
     if is_statistik(href, text):
-        if text:
-            return text
-
-        return "Statistik"
+        return text if text else "Statistik"
 
     return "PDF"
 
