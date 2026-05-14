@@ -18,6 +18,8 @@ SCRAPER_API_BASE = "https://api.scraperapi.com"
 
 STATE_FILE = "state.json"
 
+MAX_ACTIVE_ENTRIES_TO_SCAN = 12
+
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -44,7 +46,6 @@ def telegram_request_with_retry(url, data, timeout=90, retries=3):
     for attempt in range(1, retries + 1):
         try:
             response = requests.post(url, data=data, timeout=timeout)
-
             print(response.text)
 
             if response.status_code == 200:
@@ -162,7 +163,32 @@ def is_jung_or_nachwuchs(text):
 
 def is_aktiv_text(text):
     text = text.lower()
-    return "aktiv" in text and not is_jung_or_nachwuchs(text)
+
+    if is_jung_or_nachwuchs(text):
+        return False
+
+    return "aktiv" in text
+
+
+def extract_fest_name_from_text(text):
+    text = clean_text(text)
+
+    text = re.sub(r"\d{2}\.\d{2}\s*\.?\s*\d{4}", "", text)
+    text = re.sub(r"\baktiv\b", "", text, flags=re.IGNORECASE)
+    text = clean_text(text)
+
+    patterns = [
+        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Kantonales Schwingfest)",
+        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwingfest)",
+        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwinget)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return clean_text(match.group(1))
+
+    return text if text else "Schwingfest"
 
 
 def extract_number_after(label, text):
@@ -208,28 +234,7 @@ def extract_festinfos(soup):
     return lines
 
 
-def extract_fest_name_from_text(text):
-    text = clean_text(text)
-
-    text = re.sub(r"\d{2}\.\d{2}\s*\.?\s*\d{4}", "", text)
-    text = re.sub(r"\baktiv\b", "", text, flags=re.IGNORECASE)
-    text = clean_text(text)
-
-    patterns = [
-        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Kantonales Schwingfest)",
-        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwingfest)",
-        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwinget)",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            return clean_text(match.group(1))
-
-    return text if text else "Schwingfest"
-
-
-def collect_active_ranglisten_entries():
+def collect_current_active_entries():
     soup = get_soup(RANGLISTEN_URL)
 
     entries = []
@@ -237,6 +242,9 @@ def collect_active_ranglisten_entries():
 
     for link in soup.find_all("a", href=True):
         href = link["href"]
+
+        if len(entries) >= MAX_ACTIVE_ENTRIES_TO_SCAN:
+            break
 
         if "/ranglisten/" not in href:
             continue
@@ -249,8 +257,7 @@ def collect_active_ranglisten_entries():
         if "?jahr=" in full_url:
             continue
 
-        parent = link.parent
-        parent_text = clean_text(parent.get_text(" ", strip=True))
+        parent_text = clean_text(link.parent.get_text(" ", strip=True))
 
         if not is_aktiv_text(parent_text):
             continue
@@ -260,18 +267,18 @@ def collect_active_ranglisten_entries():
 
         seen.add(full_url)
 
-        event_date = extract_date_from_text(parent_text)
+        date_text = extract_date_from_text(parent_text)
         fest_name = extract_fest_name_from_text(parent_text)
 
         entries.append(
             {
                 "detail_url": full_url,
                 "fest_name": fest_name,
-                "date_text": event_date,
+                "date_text": date_text,
             }
         )
 
-    print(f"Aktiv-Ranglisten gefunden: {len(entries)}")
+    print(f"Aktuelle Aktiv-Feste zum Scannen: {len(entries)}")
 
     for entry in entries:
         print(f"{entry['date_text']} | {entry['fest_name']} | {entry['detail_url']}")
@@ -279,104 +286,49 @@ def collect_active_ranglisten_entries():
     return entries
 
 
-def is_schlussrangliste(link_text, href):
-    text = f"{link_text} {href}".lower()
+def is_main_schlussrangliste(href):
+    href_lower = href.lower()
 
-    if "zwischenrangliste" in text:
+    if "/zs" in href_lower:
         return False
 
-    return (
-        "schlussrangliste" in text
-        or "-rl.pdf" in text
-        or "_rl.pdf" in text
-    )
-
-
-def is_statistik_1_to_6(link_text, href):
-    text = f"{link_text} {href}".lower()
-
-    if "zwischenrangliste" in text:
+    if "zwischenrangliste" in href_lower:
         return False
 
-    if "statistik" not in text and "-st" not in text and "_st" not in text:
+    return href_lower.endswith("-rl.pdf") or "_rl.pdf" in href_lower
+
+
+def is_main_statistik(href):
+    href_lower = href.lower()
+
+    if "/zs" in href_lower:
         return False
 
-    patterns = [
-        r"statistik nach einem gang",
-        r"statistik nach 1 gang",
-        r"statistik[_\- ]?1",
-        r"statistik nach 2 g",
-        r"statistik[_\- ]?2",
-        r"statistik nach 3 g",
-        r"statistik[_\- ]?3",
-        r"statistik nach 4 g",
-        r"statistik[_\- ]?4",
-        r"statistik nach 5 g",
-        r"statistik[_\- ]?5",
-        r"statistik nach 6 g",
-        r"statistik[_\- ]?6",
-        r"[-_]st\.pdf",
-        r"[-_]st\d",
-    ]
-
-    return any(re.search(pattern, text) for pattern in patterns)
-
-
-def should_send_pdf(link_text, href):
-    text = f"{link_text} {href}".lower()
-
-    if "zwischenrangliste" in text:
+    if "zwischenrangliste" in href_lower:
         return False
 
-    if is_statistik_1_to_6(link_text, href):
-        return True
-
-    if is_schlussrangliste(link_text, href):
-        return True
-
-    return False
+    return href_lower.endswith("-st.pdf") or "_st.pdf" in href_lower
 
 
-def get_icon(link_text, href):
-    if is_schlussrangliste(link_text, href):
+def should_send_pdf(href):
+    return is_main_schlussrangliste(href) or is_main_statistik(href)
+
+
+def get_icon(href):
+    if is_main_schlussrangliste(href):
         return "🏁"
 
-    if is_statistik_1_to_6(link_text, href):
+    if is_main_statistik(href):
         return "📈"
 
     return "📄"
 
 
-def get_pdf_title(link_text, href):
-    title = clean_text(link_text)
-    filename = href.split("/")[-1].replace(".pdf", "")
-    filename_lower = filename.lower()
-
-    if title:
-        return title
-
-    if is_schlussrangliste(link_text, href):
+def get_pdf_title(href):
+    if is_main_schlussrangliste(href):
         return "Schlussrangliste"
 
-    if "statistik_1" in filename_lower or "st1" in filename_lower:
-        return "Statistik nach einem Gang"
-
-    if "statistik_2" in filename_lower or "st2" in filename_lower:
-        return "Statistik nach 2 Gängen"
-
-    if "statistik_3" in filename_lower or "st3" in filename_lower:
-        return "Statistik nach 3 Gängen"
-
-    if "statistik_4" in filename_lower or "st4" in filename_lower:
-        return "Statistik nach 4 Gängen"
-
-    if "statistik_5" in filename_lower or "st5" in filename_lower:
-        return "Statistik nach 5 Gängen"
-
-    if "statistik_6" in filename_lower or "st6" in filename_lower:
-        return "Statistik nach 6 Gängen"
-
-    if is_statistik_1_to_6(link_text, href):
+    if is_main_statistik(href):
         return "Statistik"
 
     return "PDF"
@@ -409,13 +361,12 @@ def process_detail_page(entry, state):
 
     for link in soup.find_all("a", href=True):
         href = link["href"]
-        link_text = clean_text(link.get_text(" ", strip=True))
 
         if ".pdf" not in href.lower():
             continue
 
-        if not should_send_pdf(link_text, href):
-            print(f"Ignoriert: {link_text} / {href}")
+        if not should_send_pdf(href):
+            print(f"Ignoriert: {href}")
             continue
 
         pdf_url = normalise_url(href)
@@ -425,13 +376,13 @@ def process_detail_page(entry, state):
             continue
 
         if not state["baseline_done"]:
-            print(f"Baseline: speichere vorhandene PDF ohne Senden: {pdf_url}")
+            print(f"Baseline: speichere ohne Senden: {pdf_url}")
             state["sent_pdfs"].append(pdf_url)
             save_state(state)
             continue
 
-        icon = get_icon(link_text, href)
-        pdf_title = get_pdf_title(link_text, href)
+        icon = get_icon(href)
+        pdf_title = get_pdf_title(href)
 
         caption = build_pdf_caption(
             icon=icon,
@@ -441,7 +392,7 @@ def process_detail_page(entry, state):
             festinfos=festinfos,
         )
 
-        print(f"Sende neue Aktiv-PDF: {pdf_title} -> {pdf_url}")
+        print(f"Sende neue PDF: {pdf_title} -> {pdf_url}")
 
         send_document(pdf_url, caption)
 
@@ -452,14 +403,14 @@ def process_detail_page(entry, state):
 
 
 def check_ranglisten(state):
-    entries = collect_active_ranglisten_entries()
+    entries = collect_current_active_entries()
 
     if not state["baseline_done"]:
-        print("Baseline-Modus aktiv: vorhandene Aktiv-PDFs werden nur gespeichert, nicht gesendet.")
+        print("Baseline-Modus: aktueller Stand wird nur gespeichert, nicht gesendet.")
 
     for entry in entries:
         try:
-            print(f"Pruefe Aktiv-Fest: {entry['fest_name']} / {entry['detail_url']}")
+            print(f"Pruefe aktuelles Aktiv-Fest: {entry['fest_name']} / {entry['detail_url']}")
             process_detail_page(entry, state)
 
         except Exception as exc:
@@ -468,7 +419,7 @@ def check_ranglisten(state):
     if not state["baseline_done"]:
         state["baseline_done"] = True
         save_state(state)
-        print("Baseline abgeschlossen. Ab dem nächsten Lauf werden nur neue PDFs gesendet.")
+        print("Baseline fertig. Ab dem nächsten Lauf werden nur neue PDFs gesendet.")
 
 
 def main():
@@ -483,7 +434,7 @@ def main():
 
     state = load_state()
 
-    print("Starte Live-Bot für neue Aktiv-Ranglisten und Statistiken...")
+    print("Starte Bot: nur neue Aktiv-Schlussranglisten und Statistiken...")
 
     check_ranglisten(state)
 
