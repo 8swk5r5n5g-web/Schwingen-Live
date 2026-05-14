@@ -1,4 +1,176 @@
 {
-  "known_pdfs": {},
-  "baseline_done": false
+  "known_pdfs": {
+    "https://arls.esv.ch/ranglisten/statistiken/": {
+      "hash": "52af346a7b5dec0696fa400eca6cbe5bc806439fbf36ebe5b2f4d8027d27c2ab",
+      "title": "Statistiken",
+      "fest": "105.Baselstädtischer Schwingertag",
+      "date": "14.05.2026",
+      "location": "Sportplatz Sandgrube Basel",
+      "schwinger": "121",
+      "website": "http://www.bsst26.ch"
+    },
+    "https://arls.esv.ch/hkesv/statistik/": {
+      "hash": "a566c49a0e6c509fce635cb11246717a61e6930690446d1bf059cd7ba1ebeb76",
+      "title": "Statistik",
+      "fest": "105.Baselstädtischer Schwingertag",
+      "date": "14.05.2026",
+      "location": "Sportplatz Sandgrube Basel",
+      "schwinger": "121",
+      "website": "http://www.bsst26.ch"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs1/2026-05-14_105_Baselstaedtischer_Schwingertag-ST.pdf": {
+      "hash": "d90951c53a3577ad43d57ba10845122b27971eb6896adfdbc27b6d7ed4c6dcb0",
+      "title": "Statistik nach einem Gang",
+      "fest": "105.Baselstädtischer Schwingertag",
+      "date": "14.05.2026",
+      "location": "Sportplatz Sandgrube Basel",
+      "schwinger": "121",
+      "website": "http://www.bsst26.ch"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs2/2026-05-14_105_Baselstaedtischer_Schwingertag-ST.pdf": {
+      "hash": "a925e853a04cb37786e61754859c3d0fdf121ff0f0f6f50f1739e3c39bcf8c5e",
+      "title": "Statistik nach 2 Gängen",
+      "fest": "105.Baselstädtischer Schwingertag",
+      "date": "14.05.2026",
+      "location": "Sportplatz Sandgrube Basel",
+      "schwinger": "121",
+      "website": "http://www.bsst26.ch"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs3/2026-05-14_105_Baselstaedtischer_Schwingertag-ST.pdf": {
+      "hash": "400567caf399f040343813fd5aba53f9b14a5bacc587f17ef5dc72c3634d2577",
+      "title": "Statistik nach 3 Gängen",
+      "fest": "105.Baselstädtischer Schwingertag",
+      "date": "14.05.2026",
+      "location": "Sportplatz Sandgrube Basel",
+      "schwinger": "121",
+      "website": "http://www.bsst26.ch"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs4/2026-05-14_105_Baselstaedtischer_Schwingertag-ST.pdf": {
+      "hash": "63b496390b72bcc45e30c5ce40ad8d15a8e71e38f1958a51cc8f45fecf7bcb49",
+      "title": "Statistik nach 4 Gängen",
+      "fest": "105.Baselstädtischer Schwingertag",
+      "date": "14.05.2026",
+      "location": "Sportplatz Sandgrube Basel",
+      "schwinger": "121",
+      "website": "http://www.bsst26.ch"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs5/2026-05-14_105_Baselstaedtischer_Schwingertag-ST.pdf": {
+      "hash": "f64f5106feb8c0fa61ad91b260ee1b4343460a86a5a46996f8f8d34d864300d8",
+      "title": "Statistik nach 5 Gängen",
+      "fest": "105.Baselstädtischer Schwingertag",
+      "date": "14.05.2026",
+      "location": "Sportplatz Sandgrube Basel",
+      "schwinger": "121",
+      "website": "http://www.bsst26.ch"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs1/2026-05-14_Pfannenstielschwinget-ST.pdf": {
+      "hash": "b74c9469815e3416b8a3d450eb62ddb3f3c3476155c4d2312f8a6981127ba2df",
+      "title": "Statistik nach einem Gang",
+      "fest": "Pfannenstielschwinget",
+      "date": "14.05.2026",
+      "location": "Meilen",
+      "schwinger": "65",
+      "website": "https://www.schwingklub-szru.ch/"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs2/2026-05-14_Pfannenstielschwinget-ST.pdf": {
+      "hash": "78c8fce68feddb020f386d7fa26c9818d25cf13d2b0c368567d75245a79470c9",
+      "title": "Statistik nach 2 Gängen",
+      "fest": "Pfannenstielschwinget",
+      "date": "14.05.2026",
+      "location": "Meilen",
+      "schwinger": "65",
+      "website": "https://www.schwingklub-szru.ch/"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs3/2026-05-14_Pfannenstielschwinget-ST.pdf": {
+      "hash": "1b5a254835d6d974e5a0179cbfeda4a2a570a14777ca33cbe0e5861a5f0de0e6",
+      "title": "Statistik nach 3 Gängen",
+      "fest": "Pfannenstielschwinget",
+      "date": "14.05.2026",
+      "location": "Meilen",
+      "schwinger": "65",
+      "website": "https://www.schwingklub-szru.ch/"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs1/2026-05-14_Schybischwinget-ST.pdf": {
+      "hash": "f36a4d9fa446b8d1d72e1fc929c830b49c6bc1ef31b35cc7141831648d848b66",
+      "title": "Statistik nach einem Gang",
+      "fest": "Schybischwinget",
+      "date": "14.05.2026",
+      "location": "Escholzmatt",
+      "schwinger": "83",
+      "website": "http://www.entlebucher-schwingerverband.ch"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs2/2026-05-14_Schybischwinget-ST.pdf": {
+      "hash": "a8694fa977e75453d354b085c3464a9ffedb9153a3e3d18150999a86f812f04c",
+      "title": "Statistik nach 2 Gängen",
+      "fest": "Schybischwinget",
+      "date": "14.05.2026",
+      "location": "Escholzmatt",
+      "schwinger": "83",
+      "website": "http://www.entlebucher-schwingerverband.ch"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs3/2026-05-14_Schybischwinget-ST.pdf": {
+      "hash": "4c7f5d8dd5dff65215343bd8c4ed3ae50f64ca2976041c2b1336acfd1bbb490b",
+      "title": "Statistik nach 3 Gängen",
+      "fest": "Schybischwinget",
+      "date": "14.05.2026",
+      "location": "Escholzmatt",
+      "schwinger": "83",
+      "website": "http://www.entlebucher-schwingerverband.ch"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs4/2026-05-14_Schybischwinget-ST.pdf": {
+      "hash": "62c9033a1f9822f718e9ae3e24e98e98ba8a7911abc6762594e79769c633bdb0",
+      "title": "Statistik nach 4 Gängen",
+      "fest": "Schybischwinget",
+      "date": "14.05.2026",
+      "location": "Escholzmatt",
+      "schwinger": "83",
+      "website": "http://www.entlebucher-schwingerverband.ch"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs1/2026-05-14_Fete_Regionale_Le_Mouret-ST.pdf": {
+      "hash": "30e0a26e4f8a74dd0e76e97b07956211683e1fedc60b26613b98f2333a282728",
+      "title": "Statistik nach einem Gang",
+      "fest": "Fête Régionale Le Mouret",
+      "date": "14.05.2026",
+      "location": "Le Mouret",
+      "schwinger": "153",
+      "website": "https://www.insor.ch/home-esv"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs2/2026-05-14_Fete_Regionale_Le_Mouret-ST.pdf": {
+      "hash": "765249d991fbc5a29361393198901fcf79428bf575c4a45dfaf740d3eb6c7168",
+      "title": "Statistik nach 2 Gängen",
+      "fest": "Fête Régionale Le Mouret",
+      "date": "14.05.2026",
+      "location": "Le Mouret",
+      "schwinger": "153",
+      "website": "https://www.insor.ch/home-esv"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs3/2026-05-14_Fete_Regionale_Le_Mouret-ST.pdf": {
+      "hash": "cd057eeb656025d94f788f97c9d6b2dd20bf3bbb7adb5f6f4c8d1c315b8c8ca9",
+      "title": "Statistik nach 3 Gängen",
+      "fest": "Fête Régionale Le Mouret",
+      "date": "14.05.2026",
+      "location": "Le Mouret",
+      "schwinger": "153",
+      "website": "https://www.insor.ch/home-esv"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs4/2026-05-14_Fete_Regionale_Le_Mouret-ST.pdf": {
+      "hash": "b53fc1aa065a072c63f7e865943f3813915146813e32d681ecc628aa0f060e40",
+      "title": "Statistik nach 4 Gängen",
+      "fest": "Fête Régionale Le Mouret",
+      "date": "14.05.2026",
+      "location": "Le Mouret",
+      "schwinger": "153",
+      "website": "https://www.insor.ch/home-esv"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs5/2026-05-14_Fete_Regionale_Le_Mouret-ST.pdf": {
+      "hash": "f60a3000ba4676a4c54b81377ec272e69ca629127ff397888026ccce47384aef",
+      "title": "Statistik nach 5 Gängen",
+      "fest": "Fête Régionale Le Mouret",
+      "date": "14.05.2026",
+      "location": "Le Mouret",
+      "schwinger": "153",
+      "website": "https://www.insor.ch/home-esv"
+    }
+  },
+  "baseline_done": true
 }
