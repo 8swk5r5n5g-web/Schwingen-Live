@@ -4,6 +4,7 @@ import json
 import time
 import hashlib
 from html import escape
+from datetime import datetime
 
 import requests
 from bs4 import BeautifulSoup
@@ -17,6 +18,10 @@ RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
 
 STATE_FILE = "state.json"
 MAX_DETAIL_PAGES = 300
+
+
+def today_text():
+    return datetime.now().strftime("%d.%m.%Y")
 
 
 def load_state():
@@ -52,7 +57,6 @@ def get_page(url, retries=3):
             )
 
             print(f"GET direkt Versuch {attempt}: {url} -> {response.status_code}")
-
             response.raise_for_status()
             return response.text
 
@@ -151,6 +155,9 @@ def collect_active_fests():
 
     fests = []
     seen = set()
+    today = today_text()
+
+    print(f"Heutiges Datum: {today}")
 
     for link in soup.find_all("a", href=True):
         href = link["href"]
@@ -172,6 +179,11 @@ def collect_active_fests():
         overview_text = clean_text(link.parent.get_text(" ", strip=True))
         overview_lower = overview_text.lower()
 
+        date_text = extract_date_from_text(overview_text)
+
+        if date_text != today:
+            continue
+
         if "aktiv" not in overview_lower:
             continue
 
@@ -183,12 +195,12 @@ def collect_active_fests():
         fests.append({
             "detail_url": detail_url,
             "overview_text": overview_text,
-            "date_text": extract_date_from_text(overview_text),
+            "date_text": date_text,
             "fest_name": extract_fest_name_from_overview(overview_text),
             "location": extract_location_from_overview(overview_text),
         })
 
-    print(f"Gefundene Aktiv-Feste: {len(fests)}")
+    print(f"Gefundene Aktiv-Feste von heute: {len(fests)}")
 
     return fests[:MAX_DETAIL_PAGES]
 
@@ -269,7 +281,6 @@ def download_pdf_for_hash(pdf_url, retries=3):
             )
 
             print(f"PDF Download Versuch {attempt}: {pdf_url} -> {response.status_code}")
-
             response.raise_for_status()
             return response.content
 
@@ -407,7 +418,7 @@ def process_fest(fest, state):
     soup = get_soup(fest["detail_url"])
 
     print(
-        f"Aktiv-Fest scannen: "
+        f"Aktiv-Fest von heute scannen: "
         f"{fest.get('fest_name', '-')} / "
         f"{fest.get('date_text', '-')} / "
         f"{fest.get('location', '-')}"
@@ -453,7 +464,7 @@ def check_ranglisten(state):
     fests = collect_active_fests()
 
     if not state["baseline_done"]:
-        print("ERSTER LAUF: Bestehende PDFs werden nur gespeichert, NICHT gesendet.")
+        print("ERSTER LAUF: Bestehende PDFs von heutigen Aktiv-Festen werden nur gespeichert, NICHT gesendet.")
 
     for fest in fests:
         try:
@@ -464,7 +475,7 @@ def check_ranglisten(state):
     if not state["baseline_done"]:
         state["baseline_done"] = True
         save_state(state)
-        print("Baseline fertig. Ab jetzt werden nur noch neue oder aktualisierte PDFs gesendet.")
+        print("Baseline fertig. Ab jetzt werden nur noch neue oder aktualisierte PDFs von heutigen Aktiv-Festen gesendet.")
 
 
 def main():
@@ -476,7 +487,7 @@ def main():
 
     state = load_state()
 
-    print("Starte Bot: Aktiv-Feste scannen, bestehende PDFs ignorieren, nur neue/aktualisierte PDFs senden.")
+    print("Starte Bot: Nur heutige Aktiv-Feste scannen, nur Statistik und Schlussrangliste senden.")
 
     check_ranglisten(state)
 
