@@ -21,8 +21,6 @@ SCRAPER_API_BASE = "https://api.scraperapi.com"
 STATE_FILE = "state.json"
 TIMEZONE = ZoneInfo("Europe/Zurich")
 
-MAX_DETAIL_PAGES = 60
-
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -34,9 +32,6 @@ def load_state():
     if "sent_pdfs" not in state:
         state["sent_pdfs"] = []
 
-    if "baseline_dates" not in state:
-        state["baseline_dates"] = []
-
     return state
 
 
@@ -47,24 +42,30 @@ def save_state(state):
 
 def telegram_request_with_retry(url, data, timeout=60, retries=3):
     for attempt in range(1, retries + 1):
-        response = requests.post(url, data=data, timeout=timeout)
+        try:
+            response = requests.post(url, data=data, timeout=timeout)
 
-        print(response.text)
+            print(response.text)
 
-        if response.status_code == 200:
-            return response
+            if response.status_code == 200:
+                return response
 
-        if response.status_code == 429:
-            try:
-                retry_after = response.json().get("parameters", {}).get("retry_after", 30)
-            except Exception:
-                retry_after = 30
+            if response.status_code == 429:
+                try:
+                    retry_after = response.json().get("parameters", {}).get("retry_after", 30)
+                except Exception:
+                    retry_after = 30
 
-            print(f"Telegram Rate Limit erreicht. Warte {retry_after} Sekunden...")
-            time.sleep(retry_after + 1)
-            continue
+                print(f"Telegram Rate Limit erreicht. Warte {retry_after} Sekunden...")
+                time.sleep(retry_after + 1)
+                continue
 
-        response.raise_for_status()
+            response.raise_for_status()
+
+        except requests.exceptions.RequestException as exc:
+            wait_time = attempt * 5
+            print(f"Telegram Fehler: {exc}. Warte {wait_time} Sekunden...")
+            time.sleep(wait_time)
 
     print("Telegram konnte nach mehreren Versuchen nicht senden.")
     return None
@@ -82,7 +83,7 @@ def send_document(pdf_url, caption):
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
         },
-        timeout=60,
+        timeout=90,
         retries=3,
     )
 
@@ -97,13 +98,31 @@ def scraper_url(target_url):
     return f"{SCRAPER_API_BASE}?{urlencode(params)}"
 
 
-def get_soup(url):
-    response = requests.get(scraper_url(url), timeout=45)
+def get_soup(url, retries=3):
+    for attempt in range(1, retries + 1):
+        try:
+            response = requests.get(
+                scraper_url(url),
+                timeout=90,
+            )
 
-    print(f"GET via ScraperAPI: {url} -> {response.status_code}")
+            print(f"GET via ScraperAPI Versuch {attempt}: {url} -> {response.status_code}")
 
-    response.raise_for_status()
-    return BeautifulSoup(response.text, "html.parser")
+            response.raise_for_status()
+
+            return BeautifulSoup(response.text, "html.parser")
+
+        except requests.exceptions.ReadTimeout:
+            wait_time = attempt * 10
+            print(f"ScraperAPI Timeout bei Versuch {attempt}. Warte {wait_time} Sekunden...")
+            time.sleep(wait_time)
+
+        except requests.exceptions.RequestException as exc:
+            wait_time = attempt * 10
+            print(f"ScraperAPI Fehler bei Versuch {attempt}: {exc}. Warte {wait_time} Sekunden...")
+            time.sleep(wait_time)
+
+    raise RuntimeError(f"ScraperAPI konnte Seite nach {retries} Versuchen nicht laden: {url}")
 
 
 def normalise_url(url):
@@ -119,49 +138,6 @@ def clean_text(text):
 
 def today_date():
     return datetime.now(TIMEZONE).date()
-
-
-def extract_event_date(soup):
-    text = clean_text(soup.get_text(" ", strip=True))
-    matches = re.findall(r"\d{2}\.\d{2}\.\d{4}", text)
-
-    for date_text in matches:
-        try:
-            return datetime.strptime(date_text, "%d.%m.%Y").date()
-        except ValueError:
-            continue
-
-    return None
-
-
-def is_active_fest(soup, detail_url):
-    text = clean_text(soup.get_text(" ", strip=True)).lower()
-    url_text = detail_url.lower()
-
-    blocked_words = [
-        "jungschwinger",
-        "jungschwingen",
-        "nachwuchs",
-        "buebenschwinget",
-        "bubenschwinget",
-        "schüler",
-        "schueler",
-        "knaben",
-    ]
-
-    for word in blocked_words:
-        if word in text or word in url_text:
-            print(f"Ignoriert, Jung/Nachwuchs erkannt: {word}")
-            return False
-
-    if re.search(r"\baktiv\b", text):
-        return True
-
-    if "rangliste" in text and "schwingfest" in text:
-        return True
-
-    print("Ignoriert, kein Aktiv-Fest erkannt.")
-    return False
 
 
 def extract_number_after(label, text):
@@ -186,32 +162,6 @@ def extract_website(soup):
     return ""
 
 
-def extract_fest_name(soup):
-    page_text = clean_text(soup.get_text(" ", strip=True))
-
-    patterns = [
-        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Kantonales Schwingfest)",
-        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwingfest)",
-        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwinget)",
-        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwingfest [A-ZÄÖÜa-zäöü0-9 .'\-]+)",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, page_text)
-        if match:
-            name = clean_text(match.group(1))
-            name = name.replace("Ranglisten", "").strip()
-            return name
-
-    h1 = soup.find("h1")
-    if h1:
-        title = clean_text(h1.get_text(" ", strip=True))
-        if "Eidgenössischer Schwingerverband" not in title:
-            return title
-
-    return "Schwingfest"
-
-
 def extract_festinfos(soup):
     text = clean_text(soup.get_text(" ", strip=True))
 
@@ -231,6 +181,77 @@ def extract_festinfos(soup):
         lines.append(f"🌐 Website: {website}")
 
     return lines
+
+
+def parse_ranglisten_overview_entries():
+    soup = get_soup(RANGLISTEN_URL)
+
+    today = today_date()
+    today_text = today.strftime("%d.%m.%Y")
+
+    entries = []
+    seen = set()
+
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
+
+        if "/ranglisten/" not in href:
+            continue
+
+        parent_text = clean_text(link.parent.get_text(" ", strip=True))
+
+        if today_text not in parent_text:
+            continue
+
+        if "aktiv" not in parent_text.lower():
+            continue
+
+        if "jung" in parent_text.lower():
+            continue
+
+        full_url = normalise_url(href)
+
+        if full_url.rstrip("/") == RANGLISTEN_URL.rstrip("/"):
+            continue
+
+        if "?jahr=" in full_url:
+            continue
+
+        if full_url in seen:
+            continue
+
+        seen.add(full_url)
+
+        fest_name = "Schwingfest"
+        ort = ""
+
+        parent_links = link.parent.find_all("a")
+
+        for parent_link in parent_links:
+            text = clean_text(parent_link.get_text(" ", strip=True))
+
+            if (
+                "schwingfest" in text.lower()
+                or "schwinget" in text.lower()
+            ):
+                fest_name = text
+                break
+
+        entries.append(
+            {
+                "detail_url": full_url,
+                "fest_name": fest_name,
+                "ort": ort,
+                "date": today,
+            }
+        )
+
+    print(f"Heutige Aktiv-Feste gefunden: {len(entries)}")
+
+    for entry in entries:
+        print(entry)
+
+    return entries
 
 
 def is_schlussrangliste(link_text, href):
@@ -277,11 +298,6 @@ def is_statistik_1_to_6(link_text, href):
 
 
 def should_send_pdf(link_text, href):
-    text = f"{link_text} {href}".lower()
-
-    if "zwischenrangliste" in text:
-        return False
-
     if is_statistik_1_to_6(link_text, href):
         return True
 
@@ -336,75 +352,31 @@ def get_pdf_title(link_text, href):
     return "PDF"
 
 
-def build_pdf_caption(icon, pdf_title, fest_name, event_date, festinfos):
+def build_pdf_caption(icon, pdf_title, fest_name, ort, event_date, festinfos):
     lines = [
         f"{icon} <b>{escape(pdf_title)}</b>",
         "",
         f"🏟 <b>{escape(fest_name)}</b>",
+        f"🗓 {event_date.strftime('%d.%m.%Y')}",
     ]
 
-    if event_date:
-        lines.append(f"🗓 {event_date.strftime('%d.%m.%Y')}")
+    if ort:
+        lines.append(f"📍 {escape(ort)}")
 
     if festinfos:
         lines.append("")
         lines.append("ℹ️ <b>Festinfos</b>")
+
         for info in festinfos:
             lines.append(escape(info))
 
     return "\n".join(lines)
 
 
-def collect_ranglisten_detail_links():
-    soup = get_soup(RANGLISTEN_URL)
+def process_detail_page(entry, state):
+    soup = get_soup(entry["detail_url"])
 
-    links = []
-    seen = set()
-
-    for link in soup.find_all("a", href=True):
-        href = link["href"]
-
-        if "/ranglisten/" not in href:
-            continue
-
-        full_url = normalise_url(href)
-
-        if full_url.rstrip("/") == RANGLISTEN_URL.rstrip("/"):
-            continue
-
-        if "?jahr=" in full_url:
-            continue
-
-        if full_url in seen:
-            continue
-
-        seen.add(full_url)
-        links.append(full_url)
-
-    print("Gefundene Ranglisten-Detailseiten:")
-    for item in links[:MAX_DETAIL_PAGES]:
-        print(item)
-
-    return links[:MAX_DETAIL_PAGES]
-
-
-def process_ranglisten_detail_page(detail_url, state, today, baseline_mode):
-    soup = get_soup(detail_url)
-
-    event_date = extract_event_date(soup)
-
-    if event_date != today:
-        print(f"Ignoriert, nicht heute: {detail_url} / Datum: {event_date}")
-        return
-
-    if not is_active_fest(soup, detail_url):
-        print(f"Ignoriert, kein Aktiv-Fest: {detail_url}")
-        return
-
-    fest_name = extract_fest_name(soup)
     festinfos = extract_festinfos(soup)
-
-    print(f"Heutiges Aktiv-Fest erkannt: {fest_name} / {event_date}")
 
     for link in soup.find_all("a", href=True):
         href = link["href"]
@@ -423,24 +395,19 @@ def process_ranglisten_detail_page(detail_url, state, today, baseline_mode):
             print(f"Bereits gesendet: {pdf_url}")
             continue
 
-        if baseline_mode:
-            print(f"Baseline heute, speichere ohne Senden: {pdf_url}")
-            state["sent_pdfs"].append(pdf_url)
-            save_state(state)
-            continue
-
         icon = get_icon(link_text, href)
         pdf_title = get_pdf_title(link_text, href)
 
         caption = build_pdf_caption(
             icon=icon,
             pdf_title=pdf_title,
-            fest_name=fest_name,
-            event_date=event_date,
+            fest_name=entry["fest_name"],
+            ort=entry["ort"],
+            event_date=entry["date"],
             festinfos=festinfos,
         )
 
-        print(f"Sende neue PDF von heute: {pdf_title} -> {pdf_url}")
+        print(f"Sende neue PDF: {pdf_title} -> {pdf_url}")
 
         send_document(pdf_url, caption)
 
@@ -451,33 +418,17 @@ def process_ranglisten_detail_page(detail_url, state, today, baseline_mode):
 
 
 def check_ranglisten(state):
-    today = today_date()
-    today_key = today.strftime("%Y-%m-%d")
+    print(f"Heutiges Datum Schweiz: {today_date().strftime('%Y-%m-%d')}")
 
-    baseline_mode = today_key not in state["baseline_dates"]
+    entries = parse_ranglisten_overview_entries()
 
-    if baseline_mode:
-        print("Erster Lauf heute mit diesem Code: vorhandene heutige PDFs werden nur gespeichert.")
-    else:
-        print("Normaler Lauf: nur neue PDFs werden gesendet.")
-
-    print(f"Heutiges Datum Schweiz: {today_key}")
-
-    detail_links = collect_ranglisten_detail_links()
-
-    print(f"Zu prüfende Ranglisten-Detailseiten: {len(detail_links)}")
-
-    for detail_url in detail_links:
+    for entry in entries:
         try:
-            print(f"Pruefe Rangliste: {detail_url}")
-            process_ranglisten_detail_page(detail_url, state, today, baseline_mode)
-        except Exception as exc:
-            print(f"Fehler bei {detail_url}: {exc}")
+            print(f"Pruefe Aktiv-Fest: {entry['fest_name']} / {entry['detail_url']}")
+            process_detail_page(entry, state)
 
-    if baseline_mode:
-        state["baseline_dates"].append(today_key)
-        save_state(state)
-        print("Baseline für heute abgeschlossen. Ab dem nächsten Lauf werden neue PDFs gesendet.")
+        except Exception as exc:
+            print(f"Fehler bei {entry['detail_url']}: {exc}")
 
 
 def main():
