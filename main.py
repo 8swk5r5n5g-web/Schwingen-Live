@@ -20,10 +20,6 @@ STATE_FILE = "state.json"
 MAX_DETAIL_PAGES = 300
 
 
-def today_text():
-    return datetime.now().strftime("%d.%m.%Y")
-
-
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r", encoding="utf-8") as file:
@@ -57,6 +53,7 @@ def get_page(url, retries=3):
             )
 
             print(f"GET direkt Versuch {attempt}: {url} -> {response.status_code}")
+
             response.raise_for_status()
             return response.text
 
@@ -86,19 +83,12 @@ def clean_text(text):
 
 
 def extract_date_from_text(text):
-    match = re.search(r"(\d{2}\.\d{2}\s*\.?\s*\d{4})", text)
+    match = re.search(r"\d{2}\.\d{2}\.\d{4}", text)
 
     if not match:
         return ""
 
-    date_text = clean_text(match.group(1))
-    date_text = date_text.replace(" .", ".")
-    date_text = date_text.replace(". ", ".")
-    return date_text
-
-
-def remove_date_from_text(text):
-    return clean_text(re.sub(r"\d{2}\.\d{2}\s*\.?\s*\d{4}", "", text))
+    return match.group(0)
 
 
 def is_jung_or_nachwuchs(text):
@@ -118,91 +108,98 @@ def is_jung_or_nachwuchs(text):
     return any(word in text for word in blocked_words)
 
 
-def extract_fest_name_from_overview(overview_text):
-    text = clean_text(overview_text)
-    text = remove_date_from_text(text)
-    text = re.sub(r"\bRangliste\b", "", text, flags=re.IGNORECASE)
-    text = clean_text(text)
-
-    parts = text.split()
-    lower_parts = [part.lower() for part in parts]
-
-    if "aktiv" in lower_parts:
-        aktiv_index = lower_parts.index("aktiv")
-        return clean_text(" ".join(parts[:aktiv_index]))
-
-    return ""
-
-
-def extract_location_from_overview(overview_text):
-    text = clean_text(overview_text)
-    text = remove_date_from_text(text)
-    text = re.sub(r"\bRangliste\b", "", text, flags=re.IGNORECASE)
-    text = clean_text(text)
-
-    parts = text.split()
-    lower_parts = [part.lower() for part in parts]
-
-    if "aktiv" in lower_parts:
-        aktiv_index = lower_parts.index("aktiv")
-        return clean_text(" ".join(parts[aktiv_index + 1:]))
-
-    return ""
-
-
 def collect_active_fests():
     soup = get_soup(RANGLISTEN_URL)
 
-    fests = []
-    seen = set()
-    today = today_text()
+    rows = soup.find_all("tr")
 
-    print(f"Heutiges Datum: {today}")
+    all_entries = []
 
-    for link in soup.find_all("a", href=True):
-        href = link["href"]
+    for row in rows:
+        row_text = clean_text(row.get_text(" ", strip=True))
 
-        if "ranglisten" not in href:
+        if not row_text:
             continue
 
-        detail_url = normalise_url(href)
-
-        if detail_url.rstrip("/") == RANGLISTEN_URL.rstrip("/"):
+        if "aktiv" not in row_text.lower():
             continue
 
-        if "?jahr=" in detail_url:
+        if is_jung_or_nachwuchs(row_text):
             continue
 
-        if detail_url in seen:
+        date_match = re.search(r"\d{2}\.\d{2}\.\d{4}", row_text)
+
+        if not date_match:
             continue
 
-        overview_text = clean_text(link.parent.get_text(" ", strip=True))
-        overview_lower = overview_text.lower()
+        date_text = date_match.group(0)
 
-        date_text = extract_date_from_text(overview_text)
+        rangliste_link = None
 
-        if date_text != today:
+        for link in row.find_all("a", href=True):
+            href = link["href"]
+
+            if "ranglisten" in href:
+                rangliste_link = normalise_url(href)
+                break
+
+        if not rangliste_link:
             continue
 
-        if "aktiv" not in overview_lower:
+        tds = row.find_all("td")
+
+        if len(tds) < 4:
             continue
 
-        if is_jung_or_nachwuchs(overview_text):
-            continue
+        fest_name = clean_text(tds[1].get_text(" ", strip=True))
+        location = clean_text(tds[3].get_text(" ", strip=True))
 
-        seen.add(detail_url)
-
-        fests.append({
-            "detail_url": detail_url,
-            "overview_text": overview_text,
+        all_entries.append({
+            "detail_url": rangliste_link,
+            "overview_text": row_text,
             "date_text": date_text,
-            "fest_name": extract_fest_name_from_overview(overview_text),
-            "location": extract_location_from_overview(overview_text),
+            "fest_name": fest_name,
+            "location": location,
         })
 
-    print(f"Gefundene Aktiv-Feste von heute: {len(fests)}")
+    if not all_entries:
+        print("Keine Aktiv-Feste gefunden.")
+        return []
 
-    return fests[:MAX_DETAIL_PAGES]
+    newest_date = max(
+        all_entries,
+        key=lambda x: datetime.strptime(x["date_text"], "%d.%m.%Y")
+    )["date_text"]
+
+    print(f"Neuestes Datum auf der Seite: {newest_date}")
+
+    filtered_entries = [
+        entry
+        for entry in all_entries
+        if entry["date_text"] == newest_date
+    ]
+
+    unique_entries = []
+    seen = set()
+
+    for entry in filtered_entries:
+        if entry["detail_url"] in seen:
+            continue
+
+        seen.add(entry["detail_url"])
+        unique_entries.append(entry)
+
+    print(f"Gefundene Aktiv-Feste mit neuestem Datum: {len(unique_entries)}")
+
+    for fest in unique_entries:
+        print(
+            f"Fest gefunden: "
+            f"{fest['fest_name']} / "
+            f"{fest['date_text']} / "
+            f"{fest['location']}"
+        )
+
+    return unique_entries[:MAX_DETAIL_PAGES]
 
 
 def is_blocked_pdf(href, link_text=""):
@@ -261,10 +258,7 @@ def get_pdf_title(href, link_text=""):
         return "Schlussrangliste"
 
     if is_statistik(href, text):
-        if text:
-            return text
-
-        return "Statistik"
+        return text if text else "Statistik"
 
     return "PDF"
 
@@ -281,6 +275,7 @@ def download_pdf_for_hash(pdf_url, retries=3):
             )
 
             print(f"PDF Download Versuch {attempt}: {pdf_url} -> {response.status_code}")
+
             response.raise_for_status()
             return response.content
 
@@ -302,6 +297,7 @@ def telegram_request_with_retry(url, data, timeout=90, retries=3):
     for attempt in range(1, retries + 1):
         try:
             response = requests.post(url, data=data, timeout=timeout)
+
             print(response.text)
 
             if response.status_code == 200:
@@ -321,8 +317,10 @@ def telegram_request_with_retry(url, data, timeout=90, retries=3):
 
         except requests.exceptions.RequestException as exc:
             wait_time = attempt * 5
+
             print(f"Telegram Fehler bei Versuch {attempt}: {exc}")
             print(f"Warte {wait_time} Sekunden...")
+
             time.sleep(wait_time)
 
     print("Telegram konnte nach mehreren Versuchen nicht senden.")
@@ -341,17 +339,15 @@ def send_document(pdf_url, caption):
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
         },
-        timeout=90,
-        retries=3,
     )
 
 
 def build_pdf_caption(pdf_title, fest_name, date_text, location, pdf_url):
     lines = [
-        f"Datum: {escape(date_text) if date_text else '-'}",
-        f"Fest: {escape(fest_name) if fest_name else '-'}",
-        f"Ort: {escape(location) if location else '-'}",
-        f"Dokument: {escape(pdf_title) if pdf_title else '-'}",
+        f"Datum: {escape(date_text)}",
+        f"Fest: {escape(fest_name)}",
+        f"Ort: {escape(location)}",
+        f"Dokument: {escape(pdf_title)}",
         f"PDF Datei: {escape(pdf_url)}",
     ]
 
@@ -369,10 +365,11 @@ def process_pdf(pdf_url, pdf_hash, pdf_title, fest, state):
             "date": fest.get("date_text", ""),
             "location": fest.get("location", ""),
         }
+
         save_state(state)
 
         if state["baseline_done"]:
-            print(f"Neue PDF nach Bot-Start erkannt: {pdf_url}")
+            print(f"Neue PDF erkannt: {pdf_url}")
 
             caption = build_pdf_caption(
                 pdf_title=pdf_title,
@@ -384,7 +381,7 @@ def process_pdf(pdf_url, pdf_hash, pdf_title, fest, state):
 
             send_document(pdf_url, caption)
         else:
-            print(f"Baseline speichert bestehende PDF ohne Senden: {pdf_url}")
+            print(f"Baseline speichert PDF ohne Senden: {pdf_url}")
 
         return
 
@@ -392,6 +389,7 @@ def process_pdf(pdf_url, pdf_hash, pdf_title, fest, state):
 
     if old_hash != pdf_hash:
         state["known_pdfs"][pdf_url]["hash"] = pdf_hash
+
         save_state(state)
 
         if state["baseline_done"]:
@@ -406,8 +404,6 @@ def process_pdf(pdf_url, pdf_hash, pdf_title, fest, state):
             )
 
             send_document(pdf_url, caption)
-        else:
-            print(f"Baseline speichert aktualisierten Hash ohne Senden: {pdf_url}")
 
         return
 
@@ -418,10 +414,10 @@ def process_fest(fest, state):
     soup = get_soup(fest["detail_url"])
 
     print(
-        f"Aktiv-Fest von heute scannen: "
-        f"{fest.get('fest_name', '-')} / "
-        f"{fest.get('date_text', '-')} / "
-        f"{fest.get('location', '-')}"
+        f"Aktiv-Fest scannen: "
+        f"{fest['fest_name']} / "
+        f"{fest['date_text']} / "
+        f"{fest['location']}"
     )
 
     found = 0
@@ -464,7 +460,7 @@ def check_ranglisten(state):
     fests = collect_active_fests()
 
     if not state["baseline_done"]:
-        print("ERSTER LAUF: Bestehende PDFs von heutigen Aktiv-Festen werden nur gespeichert, NICHT gesendet.")
+        print("ERSTER LAUF: Bestehende PDFs werden nur gespeichert, NICHT gesendet.")
 
     for fest in fests:
         try:
@@ -475,7 +471,8 @@ def check_ranglisten(state):
     if not state["baseline_done"]:
         state["baseline_done"] = True
         save_state(state)
-        print("Baseline fertig. Ab jetzt werden nur noch neue oder aktualisierte PDFs von heutigen Aktiv-Festen gesendet.")
+
+        print("Baseline fertig. Ab jetzt werden nur neue oder aktualisierte PDFs gesendet.")
 
 
 def main():
@@ -487,7 +484,7 @@ def main():
 
     state = load_state()
 
-    print("Starte Bot: Nur heutige Aktiv-Feste scannen, nur Statistik und Schlussrangliste senden.")
+    print("Starte Bot: Neueste Aktiv-Feste scannen, nur Statistik und Schlussranglisten senden.")
 
     check_ranglisten(state)
 
