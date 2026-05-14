@@ -3,6 +3,8 @@ import re
 import json
 import time
 from html import escape
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
 
 import requests
@@ -17,17 +19,22 @@ RANGLISTEN_URL = "https://esv.ch/ranglisten/"
 SCRAPER_API_BASE = "https://api.scraperapi.com"
 
 STATE_FILE = "state.json"
-MAX_DETAIL_PAGES = 5
+TIMEZONE = ZoneInfo("Europe/Zurich")
+
+MAX_DETAIL_PAGES = 60
 
 
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r", encoding="utf-8") as file:
-            return json.load(file)
+            state = json.load(file)
+    else:
+        state = {}
 
-    return {
-        "sent_pdfs": [],
-    }
+    if "sent_pdfs" not in state:
+        state["sent_pdfs"] = []
+
+    return state
 
 
 def save_state(state):
@@ -105,6 +112,24 @@ def normalise_url(url):
 
 def clean_text(text):
     return " ".join(text.split()).strip()
+
+
+def today_date():
+    return datetime.now(TIMEZONE).date()
+
+
+def extract_event_date(soup):
+    text = clean_text(soup.get_text(" ", strip=True))
+
+    matches = re.findall(r"\d{2}\.\d{2}\.\d{4}", text)
+
+    for date_text in matches:
+        try:
+            return datetime.strptime(date_text, "%d.%m.%Y").date()
+        except ValueError:
+            continue
+
+    return None
 
 
 def extract_number_after(label, text):
@@ -192,7 +217,7 @@ def is_statistik_1_to_6(link_text, href):
     if "zwischenrangliste" in text:
         return False
 
-    if "statistik" not in text and "-st.pdf" not in text and "_st.pdf" not in text:
+    if "statistik" not in text and "-st" not in text and "_st" not in text:
         return False
 
     patterns = [
@@ -210,6 +235,7 @@ def is_statistik_1_to_6(link_text, href):
         r"statistik nach 6 g",
         r"statistik[_\- ]?6",
         r"[-_]st\.pdf",
+        r"[-_]st\d",
     ]
 
     return any(re.search(pattern, text) for pattern in patterns)
@@ -242,31 +268,31 @@ def get_icon(link_text, href):
 
 def get_pdf_title(link_text, href):
     title = clean_text(link_text)
+    filename = href.split("/")[-1].replace(".pdf", "")
+    filename_lower = filename.lower()
 
     if title:
         return title
 
-    filename = href.split("/")[-1].replace(".pdf", "")
-
     if is_schlussrangliste(link_text, href):
         return "Schlussrangliste"
 
-    if "statistik_1" in filename.lower():
+    if "statistik_1" in filename_lower or "st1" in filename_lower:
         return "Statistik nach einem Gang"
 
-    if "statistik_2" in filename.lower():
+    if "statistik_2" in filename_lower or "st2" in filename_lower:
         return "Statistik nach 2 Gängen"
 
-    if "statistik_3" in filename.lower():
+    if "statistik_3" in filename_lower or "st3" in filename_lower:
         return "Statistik nach 3 Gängen"
 
-    if "statistik_4" in filename.lower():
+    if "statistik_4" in filename_lower or "st4" in filename_lower:
         return "Statistik nach 4 Gängen"
 
-    if "statistik_5" in filename.lower():
+    if "statistik_5" in filename_lower or "st5" in filename_lower:
         return "Statistik nach 5 Gängen"
 
-    if "statistik_6" in filename.lower():
+    if "statistik_6" in filename_lower or "st6" in filename_lower:
         return "Statistik nach 6 Gängen"
 
     if is_statistik_1_to_6(link_text, href):
@@ -275,12 +301,15 @@ def get_pdf_title(link_text, href):
     return "PDF"
 
 
-def build_pdf_caption(icon, pdf_title, fest_name, festinfos):
+def build_pdf_caption(icon, pdf_title, fest_name, event_date, festinfos):
     lines = [
         f"{icon} <b>{escape(pdf_title)}</b>",
         "",
         f"📍 <b>{escape(fest_name)}</b>",
     ]
+
+    if event_date:
+        lines.append(f"🗓 {event_date.strftime('%d.%m.%Y')}")
 
     if festinfos:
         lines.append("")
@@ -317,16 +346,26 @@ def collect_ranglisten_detail_links():
         seen.add(full_url)
         links.append(full_url)
 
+    print("Gefundene Ranglisten-Detailseiten:")
+    for item in links[:MAX_DETAIL_PAGES]:
+        print(item)
+
     return links[:MAX_DETAIL_PAGES]
 
 
-def process_ranglisten_detail_page(detail_url, state):
+def process_ranglisten_detail_page(detail_url, state, today):
     soup = get_soup(detail_url)
+
+    event_date = extract_event_date(soup)
+
+    if event_date != today:
+        print(f"Ignoriert, nicht heute: {detail_url} / Datum: {event_date}")
+        return
 
     fest_name = extract_fest_name(soup)
     festinfos = extract_festinfos(soup)
 
-    print(f"Fest erkannt: {fest_name}")
+    print(f"Heutiges Fest erkannt: {fest_name} / {event_date}")
 
     for link in soup.find_all("a", href=True):
         href = link["href"]
@@ -349,13 +388,14 @@ def process_ranglisten_detail_page(detail_url, state):
         pdf_title = get_pdf_title(link_text, href)
 
         caption = build_pdf_caption(
-            icon,
-            pdf_title,
-            fest_name,
-            festinfos,
+            icon=icon,
+            pdf_title=pdf_title,
+            fest_name=fest_name,
+            event_date=event_date,
+            festinfos=festinfos,
         )
 
-        print(f"Sende PDF: {pdf_title} -> {pdf_url}")
+        print(f"Sende neue PDF von heute: {pdf_title} -> {pdf_url}")
 
         send_document(pdf_url, caption)
 
@@ -366,14 +406,18 @@ def process_ranglisten_detail_page(detail_url, state):
 
 
 def check_ranglisten(state):
+    today = today_date()
+
+    print(f"Heutiges Datum Schweiz: {today.strftime('%Y-%m-%d')}")
+
     detail_links = collect_ranglisten_detail_links()
 
-    print(f"Gefundene Ranglisten-Detailseiten: {len(detail_links)}")
+    print(f"Zu prüfende Ranglisten-Detailseiten: {len(detail_links)}")
 
     for detail_url in detail_links:
         try:
             print(f"Pruefe Rangliste: {detail_url}")
-            process_ranglisten_detail_page(detail_url, state)
+            process_ranglisten_detail_page(detail_url, state, today)
         except Exception as exc:
             print(f"Fehler bei {detail_url}: {exc}")
 
@@ -390,7 +434,7 @@ def main():
 
     state = load_state()
 
-    print("Starte Testlauf Ranglisten und Statistiken...")
+    print("Starte Live-Bot für heutige Ranglisten und Statistiken...")
 
     check_ranglisten(state)
 
