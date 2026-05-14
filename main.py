@@ -36,7 +36,6 @@ def load_state():
         for url in state["sent_pdfs"]:
             if url not in state["pdf_hashes"]:
                 state["pdf_hashes"][url] = ""
-
         del state["sent_pdfs"]
 
     if "baseline_done" not in state:
@@ -112,8 +111,7 @@ def get_page(url, retries=3):
     for attempt in range(1, retries + 1):
         try:
             if SCRAPER_API_KEY:
-                request_url = scraper_url(url)
-                response = requests.get(request_url, timeout=90)
+                response = requests.get(scraper_url(url), timeout=90)
                 print(f"GET via ScraperAPI Versuch {attempt}: {url} -> {response.status_code}")
             else:
                 response = requests.get(
@@ -126,29 +124,22 @@ def get_page(url, retries=3):
             response.raise_for_status()
             return response.text
 
-        except requests.exceptions.ReadTimeout:
-            wait_time = attempt * 10
-            print(f"Timeout bei Versuch {attempt}. Warte {wait_time} Sekunden...")
-            time.sleep(wait_time)
-
         except requests.exceptions.RequestException as exc:
             wait_time = attempt * 10
             print(f"Fehler bei Versuch {attempt}: {exc}")
             print(f"Warte {wait_time} Sekunden...")
             time.sleep(wait_time)
 
-    raise RuntimeError(f"Seite konnte nach {retries} Versuchen nicht geladen werden: {url}")
+    raise RuntimeError(f"Seite konnte nicht geladen werden: {url}")
 
 
-def get_soup(url, retries=3):
-    html = get_page(url, retries=retries)
-    return BeautifulSoup(html, "html.parser")
+def get_soup(url):
+    return BeautifulSoup(get_page(url), "html.parser")
 
 
 def normalise_url(url):
     if url.startswith("http"):
         return url
-
     return requests.compat.urljoin(BASE_URL, url)
 
 
@@ -189,16 +180,6 @@ def is_jung_or_nachwuchs(text):
     return any(word in text for word in blocked_words)
 
 
-def is_active_fest(soup, overview_text=""):
-    text = clean_text(soup.get_text(" ", strip=True))
-    combined = f"{overview_text} {text}".lower()
-
-    if is_jung_or_nachwuchs(combined):
-        return False
-
-    return "aktiv" in combined
-
-
 def extract_fest_name_from_overview(overview_text):
     text = clean_text(overview_text)
     text = remove_date_from_text(text)
@@ -206,9 +187,10 @@ def extract_fest_name_from_overview(overview_text):
     text = clean_text(text)
 
     parts = text.split()
+    lower_parts = [p.lower() for p in parts]
 
-    if "aktiv" in [p.lower() for p in parts]:
-        aktiv_index = [p.lower() for p in parts].index("aktiv")
+    if "aktiv" in lower_parts:
+        aktiv_index = lower_parts.index("aktiv")
         return clean_text(" ".join(parts[:aktiv_index]))
 
     return ""
@@ -221,60 +203,11 @@ def extract_location_from_overview(overview_text):
     text = clean_text(text)
 
     parts = text.split()
+    lower_parts = [p.lower() for p in parts]
 
-    if "aktiv" in [p.lower() for p in parts]:
-        aktiv_index = [p.lower() for p in parts].index("aktiv")
+    if "aktiv" in lower_parts:
+        aktiv_index = lower_parts.index("aktiv")
         return clean_text(" ".join(parts[aktiv_index + 1:]))
-
-    return ""
-
-
-def extract_fest_name(soup, overview_text=""):
-    overview_name = extract_fest_name_from_overview(overview_text)
-
-    if overview_name:
-        return overview_name
-
-    h1 = soup.find("h1")
-
-    if h1:
-        title = clean_text(h1.get_text(" ", strip=True))
-
-        if title and "Eidgenössischer Schwingerverband" not in title:
-            return title
-
-    text = clean_text(soup.get_text(" ", strip=True))
-
-    patterns = [
-        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Kantonales Schwingfest)",
-        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwingfest)",
-        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwinget)",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text)
-
-        if match:
-            return clean_text(match.group(1))
-
-    return "Schwingfest"
-
-
-def extract_location_from_detail(soup):
-    text = clean_text(soup.get_text(" ", strip=True))
-
-    patterns = [
-        r"\bOrt[:\s]+([A-ZÄÖÜa-zäöü0-9 .'\-]+)",
-        r"\bAustragungsort[:\s]+([A-ZÄÖÜa-zäöü0-9 .'\-]+)",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text)
-
-        if match:
-            location = clean_text(match.group(1))
-            location = re.split(r"\s{2,}| Datum | Rangliste | Anzahl ", location)[0]
-            return clean_text(location)
 
     return ""
 
@@ -303,8 +236,9 @@ def collect_all_ranglisten_detail_links():
             continue
 
         overview_text = clean_text(link.parent.get_text(" ", strip=True))
+        overview_lower = overview_text.lower()
 
-        if "aktiv" not in overview_text.lower():
+        if "aktiv" not in overview_lower:
             continue
 
         if is_jung_or_nachwuchs(overview_text):
@@ -317,12 +251,59 @@ def collect_all_ranglisten_detail_links():
                 "detail_url": full_url,
                 "overview_text": overview_text,
                 "date_text": extract_date_from_text(overview_text),
+                "fest_name": extract_fest_name_from_overview(overview_text),
+                "location": extract_location_from_overview(overview_text),
             }
         )
 
     print(f"Gefundene Aktiv-Ranglisten-Detailseiten total: {len(links)}")
 
     return links[:MAX_DETAIL_PAGES]
+
+
+def extract_fest_name_from_detail(soup):
+    h1 = soup.find("h1")
+
+    if h1:
+        title = clean_text(h1.get_text(" ", strip=True))
+
+        if title and "Eidgenössischer Schwingerverband" not in title:
+            return title
+
+    text = clean_text(soup.get_text(" ", strip=True))
+
+    patterns = [
+        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Kantonales Schwingfest)",
+        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwingfest)",
+        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwinget)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+
+        if match:
+            return clean_text(match.group(1))
+
+    return ""
+
+
+def extract_location_from_detail(soup):
+    text = clean_text(soup.get_text(" ", strip=True))
+
+    patterns = [
+        r"\bOrt[:\s]+([A-ZÄÖÜa-zäöü0-9 .'\-]+)",
+        r"\bAustragungsort[:\s]+([A-ZÄÖÜa-zäöü0-9 .'\-]+)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+
+        if match:
+            location = clean_text(match.group(1))
+            location = re.split(r"\s{2,}| Datum | Rangliste | Anzahl ", location)[0]
+            return clean_text(location)
+
+    return ""
 
 
 def is_blocked_pdf(href, link_text=""):
@@ -393,7 +374,6 @@ def get_pdf_title(href, link_text=""):
     if is_statistik(href, text):
         if text:
             return text
-
         return "Statistik"
 
     return "PDF"
@@ -458,22 +438,17 @@ def build_pdf_caption(pdf_title, fest_name, date_text, location, pdf_url):
 def process_detail_page(entry, state):
     soup = get_soup(entry["detail_url"])
 
-    if not is_active_fest(soup, entry["overview_text"]):
-        print(f"Ignoriert, kein Aktiv-Fest: {entry['detail_url']}")
-        return
-
-    fest_name = extract_fest_name(soup, entry["overview_text"])
-    date_text = entry["date_text"]
+    fest_name = entry.get("fest_name") or extract_fest_name_from_detail(soup) or "Schwingfest"
+    date_text = entry.get("date_text")
 
     if not date_text:
         date_text = extract_date_from_text(clean_text(soup.get_text(" ", strip=True)))
 
-    location = extract_location_from_overview(entry["overview_text"])
-
-    if not location:
-        location = extract_location_from_detail(soup)
+    location = entry.get("location") or extract_location_from_detail(soup)
 
     print(f"Aktiv-Fest erkannt: {fest_name} / {date_text} / {location}")
+
+    found_relevant_pdf = False
 
     for link in soup.find_all("a", href=True):
         href = link["href"]
@@ -485,6 +460,8 @@ def process_detail_page(entry, state):
         if not should_send_pdf(href, link_text):
             print(f"Ignoriert: {href}")
             continue
+
+        found_relevant_pdf = True
 
         pdf_url = normalise_url(href)
         pdf_title = get_pdf_title(href, link_text)
@@ -518,6 +495,9 @@ def process_detail_page(entry, state):
         send_document(pdf_url, caption)
 
         time.sleep(2)
+
+    if not found_relevant_pdf:
+        print(f"Keine Statistik oder Schlussrangliste gefunden: {entry['detail_url']}")
 
 
 def check_ranglisten(state):
