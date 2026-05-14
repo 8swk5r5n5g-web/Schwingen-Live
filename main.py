@@ -2,18 +2,20 @@ import os
 import re
 import json
 import time
+import hashlib
 from html import escape
 from urllib.parse import urlencode
 
 import requests
 from bs4 import BeautifulSoup
 
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY")
 
-BASE_URL = "https://esv.ch"
-RANGLISTEN_URL = "https://esv.ch/ranglisten/"
+BASE_URL = "https://arls.esv.ch"
+RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
 SCRAPER_API_BASE = "https://api.scraperapi.com"
 
 STATE_FILE = "state.json"
@@ -27,8 +29,15 @@ def load_state():
     else:
         state = {}
 
-    if "sent_pdfs" not in state:
-        state["sent_pdfs"] = []
+    if "pdf_hashes" not in state:
+        state["pdf_hashes"] = {}
+
+    if "sent_pdfs" in state:
+        for url in state["sent_pdfs"]:
+            if url not in state["pdf_hashes"]:
+                state["pdf_hashes"][url] = ""
+
+        del state["sent_pdfs"]
 
     if "baseline_done" not in state:
         state["baseline_done"] = False
@@ -99,28 +108,41 @@ def scraper_url(target_url):
     return f"{SCRAPER_API_BASE}?{urlencode(params)}"
 
 
-def get_soup(url, retries=3):
+def get_page(url, retries=3):
     for attempt in range(1, retries + 1):
         try:
-            response = requests.get(scraper_url(url), timeout=90)
-
-            print(f"GET via ScraperAPI Versuch {attempt}: {url} -> {response.status_code}")
+            if SCRAPER_API_KEY:
+                request_url = scraper_url(url)
+                response = requests.get(request_url, timeout=90)
+                print(f"GET via ScraperAPI Versuch {attempt}: {url} -> {response.status_code}")
+            else:
+                response = requests.get(
+                    url,
+                    timeout=90,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                print(f"GET direkt Versuch {attempt}: {url} -> {response.status_code}")
 
             response.raise_for_status()
-            return BeautifulSoup(response.text, "html.parser")
+            return response.text
 
         except requests.exceptions.ReadTimeout:
             wait_time = attempt * 10
-            print(f"ScraperAPI Timeout bei Versuch {attempt}. Warte {wait_time} Sekunden...")
+            print(f"Timeout bei Versuch {attempt}. Warte {wait_time} Sekunden...")
             time.sleep(wait_time)
 
         except requests.exceptions.RequestException as exc:
             wait_time = attempt * 10
-            print(f"ScraperAPI Fehler bei Versuch {attempt}: {exc}")
+            print(f"Fehler bei Versuch {attempt}: {exc}")
             print(f"Warte {wait_time} Sekunden...")
             time.sleep(wait_time)
 
-    raise RuntimeError(f"ScraperAPI konnte Seite nach {retries} Versuchen nicht laden: {url}")
+    raise RuntimeError(f"Seite konnte nach {retries} Versuchen nicht geladen werden: {url}")
+
+
+def get_soup(url, retries=3):
+    html = get_page(url, retries=retries)
+    return BeautifulSoup(html, "html.parser")
 
 
 def normalise_url(url):
@@ -131,7 +153,7 @@ def normalise_url(url):
 
 
 def clean_text(text):
-    return " ".join(text.split()).strip()
+    return " ".join(text.replace("\xa0", " ").split()).strip()
 
 
 def extract_date_from_text(text):
@@ -140,7 +162,14 @@ def extract_date_from_text(text):
     if not match:
         return ""
 
-    return clean_text(match.group(1).replace(" ", ""))
+    date_text = clean_text(match.group(1))
+    date_text = date_text.replace(" .", ".")
+    date_text = date_text.replace(". ", ".")
+    return date_text
+
+
+def remove_date_from_text(text):
+    return clean_text(re.sub(r"\d{2}\.\d{2}\s*\.?\s*\d{4}", "", text))
 
 
 def is_jung_or_nachwuchs(text):
@@ -167,56 +196,45 @@ def is_active_fest(soup, overview_text=""):
     if is_jung_or_nachwuchs(combined):
         return False
 
-    if "aktiv" in combined:
-        return True
-
-    return False
+    return "aktiv" in combined
 
 
-def extract_number_after(label, text):
-    idx = text.lower().find(label.lower())
+def extract_fest_name_from_overview(overview_text):
+    text = clean_text(overview_text)
+    text = remove_date_from_text(text)
+    text = re.sub(r"\bRangliste\b", "", text, flags=re.IGNORECASE)
+    text = clean_text(text)
 
-    if idx == -1:
-        return ""
+    parts = text.split()
 
-    snippet = text[idx:idx + 100]
-    match = re.search(r"\d+", snippet)
-
-    return match.group(0) if match else ""
-
-
-def extract_website(soup):
-    for link in soup.find_all("a", href=True):
-        href = link["href"].strip()
-
-        if href.startswith("http") and "esv.ch" not in href:
-            return href
+    if "aktiv" in [p.lower() for p in parts]:
+        aktiv_index = [p.lower() for p in parts].index("aktiv")
+        return clean_text(" ".join(parts[:aktiv_index]))
 
     return ""
 
 
-def extract_festinfos(soup):
-    text = clean_text(soup.get_text(" ", strip=True))
+def extract_location_from_overview(overview_text):
+    text = clean_text(overview_text)
+    text = remove_date_from_text(text)
+    text = re.sub(r"\bRangliste\b", "", text, flags=re.IGNORECASE)
+    text = clean_text(text)
 
-    schwinger = extract_number_after("Anzahl Schwinger", text)
-    zuschauer = extract_number_after("Anzahl Zuschauer", text)
-    website = extract_website(soup)
+    parts = text.split()
 
-    lines = []
+    if "aktiv" in [p.lower() for p in parts]:
+        aktiv_index = [p.lower() for p in parts].index("aktiv")
+        return clean_text(" ".join(parts[aktiv_index + 1:]))
 
-    if schwinger:
-        lines.append(f"🤼 Anzahl Schwinger: {schwinger}")
-
-    if zuschauer:
-        lines.append(f"👥 Anzahl Zuschauer: {zuschauer}")
-
-    if website:
-        lines.append(f"🌐 Website: {website}")
-
-    return lines
+    return ""
 
 
 def extract_fest_name(soup, overview_text=""):
+    overview_name = extract_fest_name_from_overview(overview_text)
+
+    if overview_name:
+        return overview_name
+
     h1 = soup.find("h1")
 
     if h1:
@@ -239,12 +257,26 @@ def extract_fest_name(soup, overview_text=""):
         if match:
             return clean_text(match.group(1))
 
-    overview_text = clean_text(overview_text)
-    overview_text = re.sub(r"\d{2}\.\d{2}\s*\.?\s*\d{4}", "", overview_text)
-    overview_text = re.sub(r"\baktiv\b", "", overview_text, flags=re.IGNORECASE)
-    overview_text = clean_text(overview_text)
+    return "Schwingfest"
 
-    return overview_text if overview_text else "Schwingfest"
+
+def extract_location_from_detail(soup):
+    text = clean_text(soup.get_text(" ", strip=True))
+
+    patterns = [
+        r"\bOrt[:\s]+([A-ZÄÖÜa-zäöü0-9 .'\-]+)",
+        r"\bAustragungsort[:\s]+([A-ZÄÖÜa-zäöü0-9 .'\-]+)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+
+        if match:
+            location = clean_text(match.group(1))
+            location = re.split(r"\s{2,}| Datum | Rangliste | Anzahl ", location)[0]
+            return clean_text(location)
+
+    return ""
 
 
 def collect_all_ranglisten_detail_links():
@@ -256,7 +288,7 @@ def collect_all_ranglisten_detail_links():
     for link in soup.find_all("a", href=True):
         href = link["href"]
 
-        if "/ranglisten/" not in href:
+        if "ranglisten" not in href:
             continue
 
         full_url = normalise_url(href)
@@ -270,9 +302,15 @@ def collect_all_ranglisten_detail_links():
         if full_url in seen:
             continue
 
-        seen.add(full_url)
-
         overview_text = clean_text(link.parent.get_text(" ", strip=True))
+
+        if "aktiv" not in overview_text.lower():
+            continue
+
+        if is_jung_or_nachwuchs(overview_text):
+            continue
+
+        seen.add(full_url)
 
         links.append(
             {
@@ -282,75 +320,137 @@ def collect_all_ranglisten_detail_links():
             }
         )
 
-    print(f"Gefundene Ranglisten-Detailseiten total: {len(links)}")
+    print(f"Gefundene Aktiv-Ranglisten-Detailseiten total: {len(links)}")
 
     return links[:MAX_DETAIL_PAGES]
 
 
-def is_main_schlussrangliste(href):
-    href_lower = href.lower()
+def is_blocked_pdf(href, link_text=""):
+    combined = f"{href} {link_text}".lower()
 
-    if "/zs" in href_lower:
+    blocked_words = [
+        "zwischenrangliste",
+        "zwischenrang",
+        "/zs",
+        "_zs",
+        "-zs",
+        "gangliste",
+        "notizblatt",
+        "einteilung",
+        "startliste",
+        "paarung",
+    ]
+
+    return any(word in combined for word in blocked_words)
+
+
+def is_schlussrangliste(href, link_text=""):
+    combined = f"{href} {link_text}".lower()
+
+    if is_blocked_pdf(href, link_text):
         return False
 
-    if "zwischenrangliste" in href_lower:
+    if "schlussrangliste" in combined:
+        return True
+
+    if combined.endswith("-rl.pdf"):
+        return True
+
+    if "_rl.pdf" in combined:
+        return True
+
+    return False
+
+
+def is_statistik(href, link_text=""):
+    combined = f"{href} {link_text}".lower()
+
+    if is_blocked_pdf(href, link_text):
         return False
 
-    return href_lower.endswith("-rl.pdf") or "_rl.pdf" in href_lower
+    if "statistik" in combined:
+        return True
+
+    if combined.endswith("-st.pdf"):
+        return True
+
+    if "_st.pdf" in combined:
+        return True
+
+    return False
 
 
-def is_main_statistik(href):
-    href_lower = href.lower()
-
-    if "/zs" in href_lower:
-        return False
-
-    if "zwischenrangliste" in href_lower:
-        return False
-
-    return href_lower.endswith("-st.pdf") or "_st.pdf" in href_lower
+def should_send_pdf(href, link_text=""):
+    return is_schlussrangliste(href, link_text) or is_statistik(href, link_text)
 
 
-def should_send_pdf(href):
-    return is_main_schlussrangliste(href) or is_main_statistik(href)
+def get_pdf_title(href, link_text=""):
+    text = clean_text(link_text)
 
-
-def get_icon(href):
-    if is_main_schlussrangliste(href):
-        return "🏁"
-
-    if is_main_statistik(href):
-        return "📈"
-
-    return "📄"
-
-
-def get_pdf_title(href):
-    if is_main_schlussrangliste(href):
+    if is_schlussrangliste(href, text):
         return "Schlussrangliste"
 
-    if is_main_statistik(href):
+    if is_statistik(href, text):
+        if text:
+            return text
+
         return "Statistik"
 
     return "PDF"
 
 
-def build_pdf_caption(icon, pdf_title, fest_name, date_text, festinfos):
+def download_pdf_for_hash(pdf_url, retries=3):
+    for attempt in range(1, retries + 1):
+        try:
+            response = requests.get(
+                pdf_url,
+                timeout=90,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+
+            print(f"PDF Download Versuch {attempt}: {pdf_url} -> {response.status_code}")
+
+            response.raise_for_status()
+            return response.content
+
+        except requests.exceptions.RequestException as exc:
+            wait_time = attempt * 10
+            print(f"PDF Download Fehler bei Versuch {attempt}: {exc}")
+            print(f"Warte {wait_time} Sekunden...")
+            time.sleep(wait_time)
+
+    raise RuntimeError(f"PDF konnte nicht geladen werden: {pdf_url}")
+
+
+def get_pdf_hash(pdf_url):
+    pdf_content = download_pdf_for_hash(pdf_url)
+    return hashlib.sha256(pdf_content).hexdigest()
+
+
+def pdf_is_new_or_updated(pdf_url, pdf_hash, state):
+    old_hash = state["pdf_hashes"].get(pdf_url)
+
+    if old_hash is None:
+        state["pdf_hashes"][pdf_url] = pdf_hash
+        save_state(state)
+        return True
+
+    if old_hash != pdf_hash:
+        state["pdf_hashes"][pdf_url] = pdf_hash
+        save_state(state)
+        return True
+
+    return False
+
+
+def build_pdf_caption(pdf_title, fest_name, date_text, location, pdf_url):
     lines = [
-        f"{icon} <b>{escape(pdf_title)}</b>",
-        "",
-        f"🏟 <b>{escape(fest_name)}</b>",
+        f"Datum: {escape(date_text) if date_text else '-'}",
+        f"Fest: {escape(fest_name) if fest_name else '-'}",
+        f"Ort: {escape(location) if location else '-'}",
+        f"Dokument: {escape(pdf_title) if pdf_title else '-'}",
+        f"PDF Datei: {escape(pdf_url)}",
     ]
-
-    if date_text:
-        lines.append(f"🗓 {escape(date_text)}")
-
-    if festinfos:
-        lines.append("")
-        lines.append("ℹ️ <b>Festinfos</b>")
-
-        for info in festinfos:
-            lines.append(escape(info))
 
     return "\n".join(lines)
 
@@ -368,49 +468,54 @@ def process_detail_page(entry, state):
     if not date_text:
         date_text = extract_date_from_text(clean_text(soup.get_text(" ", strip=True)))
 
-    festinfos = extract_festinfos(soup)
+    location = extract_location_from_overview(entry["overview_text"])
 
-    print(f"Aktiv-Fest erkannt: {fest_name} / {date_text}")
+    if not location:
+        location = extract_location_from_detail(soup)
+
+    print(f"Aktiv-Fest erkannt: {fest_name} / {date_text} / {location}")
 
     for link in soup.find_all("a", href=True):
         href = link["href"]
+        link_text = clean_text(link.get_text(" ", strip=True))
 
         if ".pdf" not in href.lower():
             continue
 
-        if not should_send_pdf(href):
+        if not should_send_pdf(href, link_text):
             print(f"Ignoriert: {href}")
             continue
 
         pdf_url = normalise_url(href)
+        pdf_title = get_pdf_title(href, link_text)
 
-        if pdf_url in state["sent_pdfs"]:
-            print(f"Bereits bekannt: {pdf_url}")
+        try:
+            pdf_hash = get_pdf_hash(pdf_url)
+        except Exception as exc:
+            print(f"Konnte PDF Hash nicht prüfen: {pdf_url} / {exc}")
+            continue
+
+        is_new_or_updated = pdf_is_new_or_updated(pdf_url, pdf_hash, state)
+
+        if not is_new_or_updated:
+            print(f"Unverändert: {pdf_url}")
             continue
 
         if not state["baseline_done"]:
             print(f"Baseline: speichere ohne Senden: {pdf_url}")
-            state["sent_pdfs"].append(pdf_url)
-            save_state(state)
             continue
 
-        icon = get_icon(href)
-        pdf_title = get_pdf_title(href)
-
         caption = build_pdf_caption(
-            icon=icon,
             pdf_title=pdf_title,
             fest_name=fest_name,
             date_text=date_text,
-            festinfos=festinfos,
+            location=location,
+            pdf_url=pdf_url,
         )
 
-        print(f"Sende neue PDF: {pdf_title} -> {pdf_url}")
+        print(f"Sende neue oder aktualisierte PDF: {pdf_title} -> {pdf_url}")
 
         send_document(pdf_url, caption)
-
-        state["sent_pdfs"].append(pdf_url)
-        save_state(state)
 
         time.sleep(2)
 
@@ -432,7 +537,7 @@ def check_ranglisten(state):
     if not state["baseline_done"]:
         state["baseline_done"] = True
         save_state(state)
-        print("Baseline fertig. Ab dem nächsten Lauf werden nur neue PDFs gesendet.")
+        print("Baseline fertig. Ab dem nächsten Lauf werden neue oder aktualisierte PDFs gesendet.")
 
 
 def main():
@@ -442,12 +547,9 @@ def main():
     if not CHAT_ID:
         raise ValueError("CHAT_ID fehlt.")
 
-    if not SCRAPER_API_KEY:
-        raise ValueError("SCRAPER_API_KEY fehlt.")
-
     state = load_state()
 
-    print("Starte Bot: alle Aktiv-Feste prüfen, nur neue Statistik und Schlussrangliste senden...")
+    print("Starte Bot: arls.esv.ch prüfen, nur Aktiv-Feste, Statistik und Schlussrangliste senden...")
 
     check_ranglisten(state)
 
