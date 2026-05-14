@@ -17,8 +17,7 @@ RANGLISTEN_URL = "https://esv.ch/ranglisten/"
 SCRAPER_API_BASE = "https://api.scraperapi.com"
 
 STATE_FILE = "state.json"
-
-MAX_ACTIVE_ENTRIES_TO_SCAN = 12
+MAX_DETAIL_PAGES = 200
 
 
 def load_state():
@@ -161,34 +160,17 @@ def is_jung_or_nachwuchs(text):
     return any(word in text for word in blocked_words)
 
 
-def is_aktiv_text(text):
-    text = text.lower()
+def is_active_fest(soup, overview_text=""):
+    text = clean_text(soup.get_text(" ", strip=True))
+    combined = f"{overview_text} {text}".lower()
 
-    if is_jung_or_nachwuchs(text):
+    if is_jung_or_nachwuchs(combined):
         return False
 
-    return "aktiv" in text
+    if "aktiv" in combined:
+        return True
 
-
-def extract_fest_name_from_text(text):
-    text = clean_text(text)
-
-    text = re.sub(r"\d{2}\.\d{2}\s*\.?\s*\d{4}", "", text)
-    text = re.sub(r"\baktiv\b", "", text, flags=re.IGNORECASE)
-    text = clean_text(text)
-
-    patterns = [
-        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Kantonales Schwingfest)",
-        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwingfest)",
-        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwinget)",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            return clean_text(match.group(1))
-
-    return text if text else "Schwingfest"
+    return False
 
 
 def extract_number_after(label, text):
@@ -234,17 +216,45 @@ def extract_festinfos(soup):
     return lines
 
 
-def collect_current_active_entries():
+def extract_fest_name(soup, overview_text=""):
+    h1 = soup.find("h1")
+
+    if h1:
+        title = clean_text(h1.get_text(" ", strip=True))
+
+        if title and "Eidgenössischer Schwingerverband" not in title:
+            return title
+
+    text = clean_text(soup.get_text(" ", strip=True))
+
+    patterns = [
+        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Kantonales Schwingfest)",
+        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwingfest)",
+        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwinget)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+
+        if match:
+            return clean_text(match.group(1))
+
+    overview_text = clean_text(overview_text)
+    overview_text = re.sub(r"\d{2}\.\d{2}\s*\.?\s*\d{4}", "", overview_text)
+    overview_text = re.sub(r"\baktiv\b", "", overview_text, flags=re.IGNORECASE)
+    overview_text = clean_text(overview_text)
+
+    return overview_text if overview_text else "Schwingfest"
+
+
+def collect_all_ranglisten_detail_links():
     soup = get_soup(RANGLISTEN_URL)
 
-    entries = []
+    links = []
     seen = set()
 
     for link in soup.find_all("a", href=True):
         href = link["href"]
-
-        if len(entries) >= MAX_ACTIVE_ENTRIES_TO_SCAN:
-            break
 
         if "/ranglisten/" not in href:
             continue
@@ -257,33 +267,24 @@ def collect_current_active_entries():
         if "?jahr=" in full_url:
             continue
 
-        parent_text = clean_text(link.parent.get_text(" ", strip=True))
-
-        if not is_aktiv_text(parent_text):
-            continue
-
         if full_url in seen:
             continue
 
         seen.add(full_url)
 
-        date_text = extract_date_from_text(parent_text)
-        fest_name = extract_fest_name_from_text(parent_text)
+        overview_text = clean_text(link.parent.get_text(" ", strip=True))
 
-        entries.append(
+        links.append(
             {
                 "detail_url": full_url,
-                "fest_name": fest_name,
-                "date_text": date_text,
+                "overview_text": overview_text,
+                "date_text": extract_date_from_text(overview_text),
             }
         )
 
-    print(f"Aktuelle Aktiv-Feste zum Scannen: {len(entries)}")
+    print(f"Gefundene Ranglisten-Detailseiten total: {len(links)}")
 
-    for entry in entries:
-        print(f"{entry['date_text']} | {entry['fest_name']} | {entry['detail_url']}")
-
-    return entries
+    return links[:MAX_DETAIL_PAGES]
 
 
 def is_main_schlussrangliste(href):
@@ -357,7 +358,19 @@ def build_pdf_caption(icon, pdf_title, fest_name, date_text, festinfos):
 def process_detail_page(entry, state):
     soup = get_soup(entry["detail_url"])
 
+    if not is_active_fest(soup, entry["overview_text"]):
+        print(f"Ignoriert, kein Aktiv-Fest: {entry['detail_url']}")
+        return
+
+    fest_name = extract_fest_name(soup, entry["overview_text"])
+    date_text = entry["date_text"]
+
+    if not date_text:
+        date_text = extract_date_from_text(clean_text(soup.get_text(" ", strip=True)))
+
     festinfos = extract_festinfos(soup)
+
+    print(f"Aktiv-Fest erkannt: {fest_name} / {date_text}")
 
     for link in soup.find_all("a", href=True):
         href = link["href"]
@@ -387,8 +400,8 @@ def process_detail_page(entry, state):
         caption = build_pdf_caption(
             icon=icon,
             pdf_title=pdf_title,
-            fest_name=entry["fest_name"],
-            date_text=entry["date_text"],
+            fest_name=fest_name,
+            date_text=date_text,
             festinfos=festinfos,
         )
 
@@ -403,14 +416,14 @@ def process_detail_page(entry, state):
 
 
 def check_ranglisten(state):
-    entries = collect_current_active_entries()
+    entries = collect_all_ranglisten_detail_links()
 
     if not state["baseline_done"]:
         print("Baseline-Modus: aktueller Stand wird nur gespeichert, nicht gesendet.")
 
     for entry in entries:
         try:
-            print(f"Pruefe aktuelles Aktiv-Fest: {entry['fest_name']} / {entry['detail_url']}")
+            print(f"Pruefe Ranglisten-Fest: {entry['detail_url']}")
             process_detail_page(entry, state)
 
         except Exception as exc:
@@ -434,7 +447,7 @@ def main():
 
     state = load_state()
 
-    print("Starte Bot: nur neue Aktiv-Schlussranglisten und Statistiken...")
+    print("Starte Bot: alle Aktiv-Feste prüfen, nur neue Statistik und Schlussrangliste senden...")
 
     check_ranglisten(state)
 
