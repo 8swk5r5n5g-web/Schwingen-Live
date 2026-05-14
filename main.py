@@ -29,6 +29,9 @@ def load_state():
     if "sent_pdfs" not in state:
         state["sent_pdfs"] = []
 
+    if "baseline_done" not in state:
+        state["baseline_done"] = False
+
     return state
 
 
@@ -418,7 +421,13 @@ def process_detail_page(entry, state):
         pdf_url = normalise_url(href)
 
         if pdf_url in state["sent_pdfs"]:
-            print(f"Bereits gesendet: {pdf_url}")
+            print(f"Bereits bekannt: {pdf_url}")
+            continue
+
+        if not state["baseline_done"]:
+            print(f"Baseline: speichere vorhandene PDF ohne Senden: {pdf_url}")
+            state["sent_pdfs"].append(pdf_url)
+            save_state(state)
             continue
 
         icon = get_icon(link_text, href)
@@ -445,6 +454,9 @@ def process_detail_page(entry, state):
 def check_ranglisten(state):
     entries = collect_active_ranglisten_entries()
 
+    if not state["baseline_done"]:
+        print("Baseline-Modus aktiv: vorhandene Aktiv-PDFs werden nur gespeichert, nicht gesendet.")
+
     for entry in entries:
         try:
             print(f"Pruefe Aktiv-Fest: {entry['fest_name']} / {entry['detail_url']}")
@@ -452,6 +464,11 @@ def check_ranglisten(state):
 
         except Exception as exc:
             print(f"Fehler bei {entry['detail_url']}: {exc}")
+
+    if not state["baseline_done"]:
+        state["baseline_done"] = True
+        save_state(state)
+        print("Baseline abgeschlossen. Ab dem nächsten Lauf werden nur neue PDFs gesendet.")
 
 
 def main():
