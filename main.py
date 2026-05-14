@@ -4,7 +4,6 @@ import json
 import time
 import hashlib
 from html import escape
-from urllib.parse import urlencode
 
 import requests
 from bs4 import BeautifulSoup
@@ -12,11 +11,9 @@ from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY")
 
 BASE_URL = "https://arls.esv.ch"
 RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
-SCRAPER_API_BASE = "https://api.scraperapi.com"
 
 STATE_FILE = "state.json"
 MAX_DETAIL_PAGES = 300
@@ -43,28 +40,18 @@ def save_state(state):
         json.dump(state, file, ensure_ascii=False, indent=2)
 
 
-def scraper_url(target_url):
-    params = {
-        "api_key": SCRAPER_API_KEY,
-        "url": target_url,
-        "render": "false",
-    }
-    return f"{SCRAPER_API_BASE}?{urlencode(params)}"
-
-
 def get_page(url, retries=3):
     for attempt in range(1, retries + 1):
         try:
-            if SCRAPER_API_KEY:
-                response = requests.get(scraper_url(url), timeout=90)
-                print(f"GET via ScraperAPI Versuch {attempt}: {url} -> {response.status_code}")
-            else:
-                response = requests.get(
-                    url,
-                    timeout=90,
-                    headers={"User-Agent": "Mozilla/5.0"},
-                )
-                print(f"GET direkt Versuch {attempt}: {url} -> {response.status_code}")
+            response = requests.get(
+                url,
+                timeout=60,
+                headers={
+                    "User-Agent": "Mozilla/5.0 Schwingen-Live-Bot/1.0"
+                },
+            )
+
+            print(f"GET direkt Versuch {attempt}: {url} -> {response.status_code}")
 
             response.raise_for_status()
             return response.text
@@ -79,12 +66,14 @@ def get_page(url, retries=3):
 
 
 def get_soup(url):
-    return BeautifulSoup(get_page(url), "html.parser")
+    html = get_page(url)
+    return BeautifulSoup(html, "html.parser")
 
 
 def normalise_url(url):
     if url.startswith("http"):
         return url
+
     return requests.compat.urljoin(BASE_URL, url)
 
 
@@ -110,6 +99,7 @@ def remove_date_from_text(text):
 
 def is_jung_or_nachwuchs(text):
     text = text.lower()
+
     blocked_words = [
         "jung",
         "nachwuchs",
@@ -120,6 +110,7 @@ def is_jung_or_nachwuchs(text):
         "schueler",
         "knaben",
     ]
+
     return any(word in text for word in blocked_words)
 
 
@@ -130,7 +121,7 @@ def extract_fest_name_from_overview(overview_text):
     text = clean_text(text)
 
     parts = text.split()
-    lower_parts = [p.lower() for p in parts]
+    lower_parts = [part.lower() for part in parts]
 
     if "aktiv" in lower_parts:
         aktiv_index = lower_parts.index("aktiv")
@@ -146,7 +137,7 @@ def extract_location_from_overview(overview_text):
     text = clean_text(text)
 
     parts = text.split()
-    lower_parts = [p.lower() for p in parts]
+    lower_parts = [part.lower() for part in parts]
 
     if "aktiv" in lower_parts:
         aktiv_index = lower_parts.index("aktiv")
@@ -167,15 +158,15 @@ def collect_active_fests():
         if "ranglisten" not in href:
             continue
 
-        full_url = normalise_url(href)
+        detail_url = normalise_url(href)
 
-        if full_url.rstrip("/") == RANGLISTEN_URL.rstrip("/"):
+        if detail_url.rstrip("/") == RANGLISTEN_URL.rstrip("/"):
             continue
 
-        if "?jahr=" in full_url:
+        if "?jahr=" in detail_url:
             continue
 
-        if full_url in seen:
+        if detail_url in seen:
             continue
 
         overview_text = clean_text(link.parent.get_text(" ", strip=True))
@@ -187,10 +178,10 @@ def collect_active_fests():
         if is_jung_or_nachwuchs(overview_text):
             continue
 
-        seen.add(full_url)
+        seen.add(detail_url)
 
         fests.append({
-            "detail_url": full_url,
+            "detail_url": detail_url,
             "overview_text": overview_text,
             "date_text": extract_date_from_text(overview_text),
             "fest_name": extract_fest_name_from_overview(overview_text),
@@ -258,7 +249,10 @@ def get_pdf_title(href, link_text=""):
         return "Schlussrangliste"
 
     if is_statistik(href, text):
-        return text if text else "Statistik"
+        if text:
+            return text
+
+        return "Statistik"
 
     return "PDF"
 
@@ -269,9 +263,13 @@ def download_pdf_for_hash(pdf_url, retries=3):
             response = requests.get(
                 pdf_url,
                 timeout=90,
-                headers={"User-Agent": "Mozilla/5.0"},
+                headers={
+                    "User-Agent": "Mozilla/5.0 Schwingen-Live-Bot/1.0"
+                },
             )
+
             print(f"PDF Download Versuch {attempt}: {pdf_url} -> {response.status_code}")
+
             response.raise_for_status()
             return response.content
 
@@ -338,13 +336,15 @@ def send_document(pdf_url, caption):
 
 
 def build_pdf_caption(pdf_title, fest_name, date_text, location, pdf_url):
-    return "\n".join([
+    lines = [
         f"Datum: {escape(date_text) if date_text else '-'}",
         f"Fest: {escape(fest_name) if fest_name else '-'}",
         f"Ort: {escape(location) if location else '-'}",
         f"Dokument: {escape(pdf_title) if pdf_title else '-'}",
         f"PDF Datei: {escape(pdf_url)}",
-    ])
+    ]
+
+    return "\n".join(lines)
 
 
 def process_pdf(pdf_url, pdf_hash, pdf_title, fest, state):
