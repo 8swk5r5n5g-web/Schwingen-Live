@@ -34,6 +34,9 @@ def load_state():
     if "sent_pdfs" not in state:
         state["sent_pdfs"] = []
 
+    if "baseline_dates" not in state:
+        state["baseline_dates"] = []
+
     return state
 
 
@@ -120,7 +123,6 @@ def today_date():
 
 def extract_event_date(soup):
     text = clean_text(soup.get_text(" ", strip=True))
-
     matches = re.findall(r"\d{2}\.\d{2}\.\d{4}", text)
 
     for date_text in matches:
@@ -130,6 +132,36 @@ def extract_event_date(soup):
             continue
 
     return None
+
+
+def is_active_fest(soup, detail_url):
+    text = clean_text(soup.get_text(" ", strip=True)).lower()
+    url_text = detail_url.lower()
+
+    blocked_words = [
+        "jungschwinger",
+        "jungschwingen",
+        "nachwuchs",
+        "buebenschwinget",
+        "bubenschwinget",
+        "schüler",
+        "schueler",
+        "knaben",
+    ]
+
+    for word in blocked_words:
+        if word in text or word in url_text:
+            print(f"Ignoriert, Jung/Nachwuchs erkannt: {word}")
+            return False
+
+    if re.search(r"\baktiv\b", text):
+        return True
+
+    if "rangliste" in text and "schwingfest" in text:
+        return True
+
+    print("Ignoriert, kein Aktiv-Fest erkannt.")
+    return False
 
 
 def extract_number_after(label, text):
@@ -161,12 +193,15 @@ def extract_fest_name(soup):
         r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Kantonales Schwingfest)",
         r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwingfest)",
         r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwinget)",
+        r"([A-ZÄÖÜa-zäöü0-9 .'\-]+Schwingfest [A-ZÄÖÜa-zäöü0-9 .'\-]+)",
     ]
 
     for pattern in patterns:
         match = re.search(pattern, page_text)
         if match:
-            return clean_text(match.group(1))
+            name = clean_text(match.group(1))
+            name = name.replace("Ranglisten", "").strip()
+            return name
 
     h1 = soup.find("h1")
     if h1:
@@ -305,7 +340,7 @@ def build_pdf_caption(icon, pdf_title, fest_name, event_date, festinfos):
     lines = [
         f"{icon} <b>{escape(pdf_title)}</b>",
         "",
-        f"📍 <b>{escape(fest_name)}</b>",
+        f"🏟 <b>{escape(fest_name)}</b>",
     ]
 
     if event_date:
@@ -353,7 +388,7 @@ def collect_ranglisten_detail_links():
     return links[:MAX_DETAIL_PAGES]
 
 
-def process_ranglisten_detail_page(detail_url, state, today):
+def process_ranglisten_detail_page(detail_url, state, today, baseline_mode):
     soup = get_soup(detail_url)
 
     event_date = extract_event_date(soup)
@@ -362,10 +397,14 @@ def process_ranglisten_detail_page(detail_url, state, today):
         print(f"Ignoriert, nicht heute: {detail_url} / Datum: {event_date}")
         return
 
+    if not is_active_fest(soup, detail_url):
+        print(f"Ignoriert, kein Aktiv-Fest: {detail_url}")
+        return
+
     fest_name = extract_fest_name(soup)
     festinfos = extract_festinfos(soup)
 
-    print(f"Heutiges Fest erkannt: {fest_name} / {event_date}")
+    print(f"Heutiges Aktiv-Fest erkannt: {fest_name} / {event_date}")
 
     for link in soup.find_all("a", href=True):
         href = link["href"]
@@ -382,6 +421,12 @@ def process_ranglisten_detail_page(detail_url, state, today):
 
         if pdf_url in state["sent_pdfs"]:
             print(f"Bereits gesendet: {pdf_url}")
+            continue
+
+        if baseline_mode:
+            print(f"Baseline heute, speichere ohne Senden: {pdf_url}")
+            state["sent_pdfs"].append(pdf_url)
+            save_state(state)
             continue
 
         icon = get_icon(link_text, href)
@@ -407,8 +452,16 @@ def process_ranglisten_detail_page(detail_url, state, today):
 
 def check_ranglisten(state):
     today = today_date()
+    today_key = today.strftime("%Y-%m-%d")
 
-    print(f"Heutiges Datum Schweiz: {today.strftime('%Y-%m-%d')}")
+    baseline_mode = today_key not in state["baseline_dates"]
+
+    if baseline_mode:
+        print("Erster Lauf heute mit diesem Code: vorhandene heutige PDFs werden nur gespeichert.")
+    else:
+        print("Normaler Lauf: nur neue PDFs werden gesendet.")
+
+    print(f"Heutiges Datum Schweiz: {today_key}")
 
     detail_links = collect_ranglisten_detail_links()
 
@@ -417,9 +470,14 @@ def check_ranglisten(state):
     for detail_url in detail_links:
         try:
             print(f"Pruefe Rangliste: {detail_url}")
-            process_ranglisten_detail_page(detail_url, state, today)
+            process_ranglisten_detail_page(detail_url, state, today, baseline_mode)
         except Exception as exc:
             print(f"Fehler bei {detail_url}: {exc}")
+
+    if baseline_mode:
+        state["baseline_dates"].append(today_key)
+        save_state(state)
+        print("Baseline für heute abgeschlossen. Ab dem nächsten Lauf werden neue PDFs gesendet.")
 
 
 def main():
@@ -434,7 +492,7 @@ def main():
 
     state = load_state()
 
-    print("Starte Live-Bot für heutige Ranglisten und Statistiken...")
+    print("Starte Live-Bot für heutige Aktiv-Ranglisten und Statistiken...")
 
     check_ranglisten(state)
 
