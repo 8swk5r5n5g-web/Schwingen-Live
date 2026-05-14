@@ -1,21 +1,4 @@
 {
-  "sent_pdfs": [
-    "https://esv.ch/documents/ranglisten/2026-05-10_Mittellaendisches_Schwingfest-RL.pdf",
-    "https://esv.ch/documents/ranglisten/2026-05-10_Mittellaendisches_Schwingfest-ST.pdf",
-    "https://esv.ch/documents/ranglisten/2026-05-10_106_Zuger_Kantonales_Schwingfest-RL.pdf",
-    "https://esv.ch/documents/ranglisten/2026-05-10_106_Zuger_Kantonales_Schwingfest-ST.pdf",
-    "https://esv.ch/documents/ranglisten/2026-05-10_Fete_Regionale_Oron-RL.pdf",
-    "https://esv.ch/documents/ranglisten/2026-05-10_Fete_Regionale_Oron-ST.pdf",
-    "https://esv.ch/documents/ranglisten/2026-05-09_Abendschwinget_Stadtverband_StGallen-RL.pdf",
-    "https://esv.ch/documents/ranglisten/2026-05-09_Abendschwinget_Stadtverband_StGallen-ST.pdf",
-    "https://esv.ch/documents/ranglisten/2026-05-03_120_Thurgauer_Kantonales_Schwingfest-RL.pdf",
-    "https://esv.ch/documents/ranglisten/2026-05-03_120_Thurgauer_Kantonales_Schwingfest-ST.pdf",
-    "https://esv.ch/documents/ranglisten/2026-05-03_Emmentalisches_Schwingfest-RL.pdf",
-    "https://esv.ch/documents/ranglisten/2026-05-03_Emmentalisches_Schwingfest-ST.pdf",
-    "https://esv.ch/documents/ranglisten/2026-05-03_Solothurner_Kantonal_Schwingfest-RL.pdf",
-    "https://esv.ch/documents/ranglisten/2026-05-03_Solothurner_Kantonal_Schwingfest-ST.pdf",
-    "https://esv.ch/documents/ranglisten/2026-05-03_Roteborger_Schwinget-RL.pdf",
-    "https://esv.ch/documents/ranglisten/2026-05-03_Roteborger_Schwinget-ST.pdf"
-  ],
-  "baseline_done": true
+  "sent_pdfs": [],
+  "baseline_done": false
 }
