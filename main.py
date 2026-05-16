@@ -14,6 +14,12 @@ from bs4 import BeautifulSoup
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
+ULTRA_INSTANCE = os.getenv("ULTRA_INSTANCE")
+ULTRA_TOKEN = os.getenv("ULTRA_TOKEN")
+WHATSAPP_GROUP = os.getenv("WHATSAPP_GROUP")
+
+TELEGRAM_CHANNEL_LINK = "https://t.me/schwingenlive"
+
 BASE_URL = "https://arls.esv.ch"
 RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
 
@@ -400,6 +406,40 @@ def send_document(pdf_url, caption):
     )
 
 
+def send_whatsapp_message(message):
+    if not ULTRA_INSTANCE or not ULTRA_TOKEN or not WHATSAPP_GROUP:
+        print("WhatsApp nicht gesendet: ULTRA_INSTANCE, ULTRA_TOKEN oder WHATSAPP_GROUP fehlt.")
+        return
+
+    url = f"https://api.ultramsg.com/{ULTRA_INSTANCE}/messages/chat"
+
+    payload = {
+        "token": ULTRA_TOKEN,
+        "to": WHATSAPP_GROUP,
+        "body": message,
+        "priority": "10",
+    }
+
+    for attempt in range(1, 4):
+        try:
+            response = requests.post(url, data=payload, timeout=60)
+            print(f"WhatsApp Versuch {attempt}: {response.status_code}")
+            print(response.text)
+
+            if response.status_code == 200:
+                return
+
+            response.raise_for_status()
+
+        except requests.exceptions.RequestException as exc:
+            wait_time = attempt * 5
+            print(f"WhatsApp Fehler bei Versuch {attempt}: {exc}")
+            print(f"Warte {wait_time} Sekunden...")
+            time.sleep(wait_time)
+
+    print("WhatsApp konnte nach mehreren Versuchen nicht senden.")
+
+
 def build_pdf_caption(pdf_title, fest, detail_infos, pdf_url):
     schwinger = detail_infos.get("schwinger", "")
     website = detail_infos.get("website", "")
@@ -412,6 +452,38 @@ def build_pdf_caption(pdf_title, fest, detail_infos, pdf_url):
         f"🌐 Webseite Fest: {escape(website) if website else '-'}",
         f"📄 Dokument: {escape(pdf_title)}",
     ]
+
+    return "\n".join(lines)
+
+
+def build_whatsapp_message(pdf_title, fest, detail_infos):
+    schwinger = detail_infos.get("schwinger", "")
+    website = detail_infos.get("website", "")
+
+    lines = [
+        f"🏔️ {fest.get('fest_name', '-')}",
+        "",
+        f"📊 {pdf_title}",
+        "",
+        f"📅 Datum: {fest.get('date_text', '-')}",
+        f"📍 Ort: {fest.get('location', '-')}",
+    ]
+
+    if schwinger:
+        lines.append(f"🤼 Anzahl Schwinger: {schwinger}")
+
+    if website:
+        lines.extend([
+            "",
+            f"🌐 Webseite Fest:",
+            website,
+        ])
+
+    lines.extend([
+        "",
+        "👉 Vollständige Rangliste & PDFs:",
+        TELEGRAM_CHANNEL_LINK,
+    ])
 
     return "\n".join(lines)
 
@@ -443,6 +515,15 @@ def process_pdf(pdf_url, pdf_hash, pdf_title, fest, detail_infos, state):
             )
 
             send_document(pdf_url, caption)
+
+            whatsapp_message = build_whatsapp_message(
+                pdf_title=pdf_title,
+                fest=fest,
+                detail_infos=detail_infos,
+            )
+
+            send_whatsapp_message(whatsapp_message)
+
         else:
             print(f"Baseline speichert bestehende PDF ohne Senden: {pdf_url}")
 
