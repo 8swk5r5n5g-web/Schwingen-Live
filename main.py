@@ -405,13 +405,12 @@ def build_pdf_caption(pdf_title, fest, detail_infos, pdf_url):
     website = detail_infos.get("website", "")
 
     lines = [
-        f"Datum: {escape(fest.get('date_text', '-'))}",
-        f"Fest: {escape(fest.get('fest_name', '-'))}",
-        f"Ort: {escape(fest.get('location', '-'))}",
-        f"Anzahl Schwinger: {escape(schwinger) if schwinger else '-'}",
-        f"Webseite Fest: {escape(website) if website else '-'}",
-        f"Dokument: {escape(pdf_title)}",
-        f"PDF Datei: {escape(pdf_url)}",
+        f"📅 Datum: {escape(fest.get('date_text', '-'))}",
+        f"🏟 Fest: {escape(fest.get('fest_name', '-'))}",
+        f"📍 Ort: {escape(fest.get('location', '-'))}",
+        f"🤼 Anzahl Schwinger: {escape(schwinger) if schwinger else '-'}",
+        f"🌐 Webseite Fest: {escape(website) if website else '-'}",
+        f"📄 Dokument: {escape(pdf_title)}",
     ]
 
     return "\n".join(lines)
