@@ -271,7 +271,7 @@
       "website": "https://www.schwingklub-szru.ch/"
     },
     "https://arls.esv.ch/documents/ranglisten/zs1/2026-05-16_Seelaendisches_Schwingfest-ST.pdf": {
-      "hash": "179f15b0293a03f041807f76de38eeff3a47bba11273d4a9427559645f4b82d0",
+      "hash": "b186c60c7d49c6f9c38f00a5bb4f258ff42b9ef637029c1926a653e3aec930f1",
       "title": "Statistik nach einem Gang",
       "fest": "Seeländisches Schwingfest",
       "date": "16.05.2026",
@@ -280,7 +280,7 @@
       "website": "http://ssf2026.ch"
     },
     "https://arls.esv.ch/documents/ranglisten/zs2/2026-05-16_Seelaendisches_Schwingfest-ST.pdf": {
-      "hash": "d990943b37e05565b81885f88089aa307f2abcee5b8b8b5f22cb770c8430046b",
+      "hash": "0c43a80adc796d24b61e5917063cf4e606b64d7eb75f3dec66fd05c4c40bbfcc",
       "title": "Statistik nach 2 Gängen",
       "fest": "Seeländisches Schwingfest",
       "date": "16.05.2026",
@@ -289,7 +289,7 @@
       "website": "http://ssf2026.ch"
     },
     "https://arls.esv.ch/documents/ranglisten/zs3/2026-05-16_Seelaendisches_Schwingfest-ST.pdf": {
-      "hash": "f72ee8c3dd6e7babd821bbc75447233ad143a6df21490fe1cf4b150ac0fbce15",
+      "hash": "d6dccd8857031fb85872aa7a1273f07157acd9ac5955ba2cbf49cef37b2023fb",
       "title": "Statistik nach 3 Gängen",
       "fest": "Seeländisches Schwingfest",
       "date": "16.05.2026",
@@ -298,8 +298,17 @@
       "website": "http://ssf2026.ch"
     },
     "https://arls.esv.ch/documents/ranglisten/zs4/2026-05-16_Seelaendisches_Schwingfest-ST.pdf": {
-      "hash": "211a393dfcc8f7d532fbb491d7334916fcab2523381861a8d529f920c8be162f",
+      "hash": "f9654ce8dc9be5e1c8fa2264cad8729f732bd3ce19cecd8f78df60b29a74b30f",
       "title": "Statistik nach 4 Gängen",
+      "fest": "Seeländisches Schwingfest",
+      "date": "16.05.2026",
+      "location": "Ipsach",
+      "schwinger": "154",
+      "website": "http://ssf2026.ch"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs5/2026-05-16_Seelaendisches_Schwingfest-ST.pdf": {
+      "hash": "3dd3e3fb19c135cda441914e5184fd30d4ba300e13ad481e17b3250592a90265",
+      "title": "Statistik nach 5 Gängen",
       "fest": "Seeländisches Schwingfest",
       "date": "16.05.2026",
       "location": "Ipsach",
