@@ -271,8 +271,17 @@
       "website": "https://www.schwingklub-szru.ch/"
     },
     "https://arls.esv.ch/documents/ranglisten/zs1/2026-05-16_Seelaendisches_Schwingfest-ST.pdf": {
-      "hash": "2a3fdc783d2e5fc67c81abddf01be83acfc9642c8fbc65ac0ac68bffab2c899d",
+      "hash": "4ace65e2accd9a5e27135e259ff616549e378eb788ce49fe0e19325f17f99e7b",
       "title": "Statistik nach einem Gang",
+      "fest": "Seeländisches Schwingfest",
+      "date": "16.05.2026",
+      "location": "Ipsach",
+      "schwinger": "154",
+      "website": "http://ssf2026.ch"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs2/2026-05-16_Seelaendisches_Schwingfest-ST.pdf": {
+      "hash": "3bf5fea0e763caedf408a7f9b71059b8e857a0a0582ca872f8602ba6a0f411e9",
+      "title": "Statistik nach 2 Gängen",
       "fest": "Seeländisches Schwingfest",
       "date": "16.05.2026",
       "location": "Ipsach",
