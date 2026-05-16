@@ -259,15 +259,8 @@ def extract_detail_infos(soup):
     }
 
 
-def is_pdf_link(href):
-    href_lower = href.lower()
-
-    return (
-        ".pdf" in href_lower
-        or "pdf" in href_lower
-        or "download" in href_lower
-        or "rangliste" in href_lower
-    )
+def is_real_pdf_url(href):
+    return href.lower().split("?")[0].endswith(".pdf")
 
 
 def is_blocked_pdf(href, link_text=""):
@@ -288,14 +281,20 @@ def is_blocked_pdf(href, link_text=""):
 def is_statistik(href, link_text=""):
     combined = f"{href} {link_text}".lower()
 
+    if not is_real_pdf_url(href):
+        return False
+
     if is_blocked_pdf(href, link_text):
         return False
 
-    return "statistik" in combined
+    return "statistik" in combined or "-st.pdf" in combined or "_st.pdf" in combined
 
 
 def is_schlussrangliste(href, link_text=""):
     combined = f"{href} {link_text}".lower()
+
+    if not is_real_pdf_url(href):
+        return False
 
     if is_blocked_pdf(href, link_text):
         return False
@@ -303,7 +302,6 @@ def is_schlussrangliste(href, link_text=""):
     return (
         "schlussrangliste" in combined
         or "schlussrang" in combined
-        or combined.strip() == "rangliste"
         or combined.endswith("-rl.pdf")
         or "_rl.pdf" in combined
     )
@@ -320,9 +318,7 @@ def get_pdf_title(href, link_text=""):
         return text if text else "Statistik"
 
     if is_schlussrangliste(href, text):
-        if text and text.lower() != "rangliste":
-            return text
-        return "Schlussrangliste"
+        return text if text else "Schlussrangliste"
 
     return "PDF"
 
@@ -438,7 +434,7 @@ def process_pdf(pdf_url, pdf_hash, pdf_title, fest, detail_infos, state):
         save_state(state)
 
         if state["baseline_done"]:
-            print(f"Neue PDF erkannt: {pdf_url}")
+            print(f"Neue PDF erkannt und wird gesendet: {pdf_url}")
 
             caption = build_pdf_caption(
                 pdf_title=pdf_title,
@@ -449,7 +445,7 @@ def process_pdf(pdf_url, pdf_hash, pdf_title, fest, detail_infos, state):
 
             send_document(pdf_url, caption)
         else:
-            print(f"Baseline speichert PDF ohne Senden: {pdf_url}")
+            print(f"Baseline speichert bestehende PDF ohne Senden: {pdf_url}")
 
         return
 
@@ -463,18 +459,7 @@ def process_pdf(pdf_url, pdf_hash, pdf_title, fest, detail_infos, state):
 
         save_state(state)
 
-        if state["baseline_done"]:
-            print(f"Aktualisierte PDF erkannt: {pdf_url}")
-
-            caption = build_pdf_caption(
-                pdf_title=pdf_title,
-                fest=fest,
-                detail_infos=detail_infos,
-                pdf_url=pdf_url,
-            )
-
-            send_document(pdf_url, caption)
-
+        print(f"PDF war bereits bekannt, Hash wurde nur aktualisiert, NICHT erneut gesendet: {pdf_url}")
         return
 
     print(f"Unverändert: {pdf_url}")
@@ -542,7 +527,7 @@ def check_ranglisten(state):
     if not state["baseline_done"]:
         state["baseline_done"] = True
         save_state(state)
-        print("Baseline fertig. Ab jetzt werden nur neue oder aktualisierte PDFs gesendet.")
+        print("Baseline fertig. Ab jetzt werden nur neue PDF-URLs gesendet.")
 
 
 def main():
@@ -554,7 +539,7 @@ def main():
 
     state = load_state()
 
-    print("Starte Bot: Neueste Aktiv-Feste öffnen, Festseiten scannen, nur Statistik und Schlussranglisten senden.")
+    print("Starte Bot: Neueste Aktiv-Feste öffnen, nur neue Statistik- und Schlussranglisten-PDFs senden.")
 
     check_ranglisten(state)
 
