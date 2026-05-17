@@ -332,6 +332,24 @@
       "location": "Ipsach",
       "schwinger": "154",
       "website": "http://ssf2026.ch"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs1/2026-05-17_Basellandschaftliches_Kantonalschwingfest-ST.pdf": {
+      "hash": "9258f97c15b44e3c7cf29992e06bf8def196d2a54e5d2a794322d6e5d9d35285",
+      "title": "Statistik nach einem Gang",
+      "fest": "Basellandschaftliches Kantonalschwingfest",
+      "date": "17.05.2026",
+      "location": "Oberdorf",
+      "schwinger": "118",
+      "website": "https://oberdorf2026.ch"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs1/2026-05-17_102_Schwyzer_Kantonales_Schwing-_und_Aelplerfest-ST.pdf": {
+      "hash": "ab300fadc3d92c1fd814ebb2f044cbea22e9c913b4724efee016dc685cd38168",
+      "title": "Statistik nach einem Gang",
+      "fest": "102.Schwyzer Kantonales Schwing- und Älplerfest",
+      "date": "17.05.2026",
+      "location": "Brunnen",
+      "schwinger": "243",
+      "website": "http://www.schwyzer2026.ch"
     }
   },
   "baseline_done": true
