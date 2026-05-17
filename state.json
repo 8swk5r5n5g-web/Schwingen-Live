@@ -343,7 +343,7 @@
       "website": "https://oberdorf2026.ch"
     },
     "https://arls.esv.ch/documents/ranglisten/zs1/2026-05-17_102_Schwyzer_Kantonales_Schwing-_und_Aelplerfest-ST.pdf": {
-      "hash": "5fa5f75a433ee6cd1cc2a3253cf060d90c1ed872524439f818114d86fdc83b8d",
+      "hash": "3e5f7602017ba8c6f8c4218e8cffc76fe908f5bfd29fca2c2b7c1bf15991a2bf",
       "title": "Statistik nach einem Gang",
       "fest": "102.Schwyzer Kantonales Schwing- und Älplerfest",
       "date": "17.05.2026",
@@ -352,7 +352,7 @@
       "website": "http://www.schwyzer2026.ch"
     },
     "https://arls.esv.ch/documents/ranglisten/zs2/2026-05-17_102_Schwyzer_Kantonales_Schwing-_und_Aelplerfest-ST.pdf": {
-      "hash": "f9fe47cfeb01585a8fcbd32e3505f2a82c4644c443dda508515dc315d45a38c3",
+      "hash": "0c96ff394e47e13f1108c0afb86bc33f236738cd8e3f2b62190915c0f2a25805",
       "title": "Statistik nach 2 Gängen",
       "fest": "102.Schwyzer Kantonales Schwing- und Älplerfest",
       "date": "17.05.2026",
@@ -388,21 +388,21 @@
       "website": "https://oberdorf2026.ch"
     },
     "https://arls.esv.ch/documents/ranglisten/zs1/2026-05-17_Fete_Regionale_Cousset2-ST.pdf": {
-      "hash": "36357de51ec3240b64a136b071b0b05b05f3dab97da63c00a039fccaecd740bf",
+      "hash": "2395113f2ea5d90c30c6bd200ae7f29fc2e858eb854af8edc8ac61df8d967796",
       "title": "Statistik nach einem Gang",
       "fest": "Fête Régionale Cousset",
       "date": "17.05.2026",
       "location": "Cousset",
-      "schwinger": "144",
+      "schwinger": "37",
       "website": "https://www.insor.ch/home-esv"
     },
     "https://arls.esv.ch/documents/ranglisten/zs2/2026-05-17_Fete_Regionale_Cousset2-ST.pdf": {
-      "hash": "df9599bb8a1b12cb1115c4bbe9dd9af342b9307c928b76e104d31ccbe47edf27",
+      "hash": "409ebafd8482cc679c03d168705624c3e59b7708cd4d6f23c34dd84e86e88ce2",
       "title": "Statistik nach 2 Gängen",
       "fest": "Fête Régionale Cousset",
       "date": "17.05.2026",
       "location": "Cousset",
-      "schwinger": "144",
+      "schwinger": "37",
       "website": "https://www.insor.ch/home-esv"
     },
     "https://arls.esv.ch/documents/ranglisten/zs3/2026-05-17_Basellandschaftliches_Kantonalschwingfest-ST.pdf": {
@@ -424,22 +424,31 @@
       "website": "http://www.mettmi2026.ch"
     },
     "https://arls.esv.ch/documents/ranglisten/zs3/2026-05-17_Fete_Regionale_Cousset2-ST.pdf": {
-      "hash": "eb5729d4d5c759e12ee1405b15f4b0dba75edb5b3cc0057b8cf650828d0da0cb",
+      "hash": "ad6f8bb1bc7dbdc6499ded648ed3c3e8267d3fc56cedde16848efdddd0e57899",
       "title": "Statistik nach 3 Gängen",
       "fest": "Fête Régionale Cousset",
       "date": "17.05.2026",
       "location": "Cousset",
-      "schwinger": "144",
+      "schwinger": "37",
       "website": "https://www.insor.ch/home-esv"
     },
     "https://arls.esv.ch/documents/ranglisten/zs3/2026-05-17_102_Schwyzer_Kantonales_Schwing-_und_Aelplerfest-ST.pdf": {
-      "hash": "232af851ce840df8002cb45ae8763d012ce9a62d85e08e6e5e45eca95a8385fb",
+      "hash": "b57ef3108328cd315276c62f5ec02da74831e726d328738a8dc3457f25c63b3c",
       "title": "Statistik nach 3 Gängen",
       "fest": "102.Schwyzer Kantonales Schwing- und Älplerfest",
       "date": "17.05.2026",
       "location": "Brunnen",
       "schwinger": "243",
       "website": "http://www.schwyzer2026.ch"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs4/2026-05-17_Fete_Regionale_Cousset2-ST.pdf": {
+      "hash": "5f03c85204efe7b3f2e967ecf6effb028ff345f52e5a37f1cf1d0ee870d6911e",
+      "title": "Statistik nach 4 Gängen",
+      "fest": "Fête Régionale Cousset",
+      "date": "17.05.2026",
+      "location": "Cousset",
+      "schwinger": "37",
+      "website": "https://www.insor.ch/home-esv"
     }
   },
   "baseline_done": true
