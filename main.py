@@ -119,7 +119,7 @@ def extract_latest_active_feste():
             "datum": datum,
             "name": name,
             "ort": ort,
-            "url": BASE_URL + href
+            "url": href if href.startswith("http") else BASE_URL + href
         })
 
     print(f"Alle Aktiv-Feste gefunden: {len(feste)}")
