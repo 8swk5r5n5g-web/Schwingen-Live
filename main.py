@@ -91,96 +91,89 @@ def send_telegram_document(pdf_bytes, filename, caption, reply_markup=None):
     response = requests.post(url, data=data, files=files, timeout=60)
     response.raise_for_status()
 
-# --- Strategische Freitags-Agenda (Auslesung der echten Agenda-Tabelle) ---
+# --- Strategische Freitags-Agenda (Auslesung über den gesamten Seiten-Text) ---
 def check_and_send_agenda(state, is_manual=False):
     now = datetime.now()
     current_calendar_week = now.strftime("%Y-%V")
     
-    # Automatisch nur Freitags um die Mittagszeit, ausser es wird manuell erzwungen
     if not is_manual:
         if now.weekday() != 4 or now.hour != 12:
             return
         if state["last_agenda_sent"] == current_calendar_week:
             return
 
-    print("Starte Agenda-Lauf: Generiere Vorschau aus arls.esv.ch/agenda/ ...")
+    print("Starte Agenda-Lauf: Generiere Vorschau aus arls.esv.ch/agenda/ (Volltext-Modus)...")
     soup = get_soup(AGENDA_URL)
+    
+    # Gesamten Text der Seite holen und in Zeilen zerlegen
+    page_lines = [clean_text(line) for line in soup.get_text("\n").split("\n") if line.strip()]
     
     agenda_entries = []
     friday_date = now.date()
     saturday = friday_date + timedelta(days=1)
     sunday = friday_date + timedelta(days=2)
+    
+    allowed_dates = [saturday, sunday]
+    if is_manual:
+        allowed_dates = [friday_date + timedelta(days=i) for i in range(-2, 4)]
 
-    # Durchsuche alle Zeilen und Listenelemente auf der Seite flexibel
-    for row in soup.find_all(["tr", "div", "li"]):
-        row_text = clean_text(row.get_text(" "))
-        
-        # Sicherstellen, dass es ein Aktivfest ist und kein Nachwuchs
-        if "aktiv" not in row_text.lower() or is_jung_or_nachwuchs(row_text):
-            continue
-            
-        # Datum aus der Zeile extrahieren
-        date_str = extract_date(row_text)
+    # Auch gezielt nach Links suchen, falls wir URLs brauchen
+    links_dict = {}
+    for link in soup.find_all("a", href=True):
+        link_text = clean_text(link.get_text())
+        if link_text and "anlass=" in link["href"]:
+            links_dict[link_text] = normalise_url(link["href"])
+
+    for line in page_lines:
+        # Prüfen, ob ein Datum in der Zeile existiert
+        date_str = extract_date(line)
         if not date_str:
             continue
             
         try:
             fest_date = parse_date(date_str)
-            
-            # Filter für das anstehende Wochenende (+/-3 Tage Toleranz bei manuellem Start)
-            allowed_dates = [saturday, sunday]
-            if is_manual:
-                allowed_dates = [friday_date + timedelta(days=i) for i in range(-2, 4)]
-
             if fest_date.date() in allowed_dates:
-                link = row.find("a", href=True)
-                detail_url = normalise_url(link["href"]) if link else AGENDA_URL
-                
-                # Intelligenten Namen extrahieren: Wir bereinigen den Text von Datum, "aktiv" und Orten
-                clean_name = row_text
-                clean_name = clean_name.replace(date_str, "")
-                
-                # Entferne das isolierte Wort "aktiv"
-                clean_name = re.sub(r"\baktiv\b", "", clean_name, flags=re.IGNORECASE)
-                
-                # Schwingeranzahl auslesen falls vorhanden (z.B. "Anzahl Schwinger 160")
-                schwinger_count = ""
-                match_s = re.search(r"Anzahl\s*Schwinger\s*(\d+)", clean_name, flags=re.IGNORECASE)
-                if match_s:
-                    clean_name = clean_name.replace(match_s.group(0), "")
-                    schwinger_count = match_s.group(1)
-                else:
-                    # Alternativer Check auf eine alleinstehende Zahl am Ende der Zeile
-                    match_end = re.search(r"\b(\d{2,3})\b$", clean_name)
-                    if match_end and int(match_end.group(1)) > 30:
-                        clean_name = clean_name.replace(match_end.group(0), "")
-                        schwinger_count = match_end.group(1)
+                # Nur Aktivfeste beachten, Nachwuchs blockieren
+                if "aktiv" in line.lower() and not is_jung_or_nachwuchs(line):
+                    
+                    # Text bereinigen, um den reinen Festnamen zu isolieren
+                    clean_line = line.replace(date_str, "")
+                    clean_line = re.sub(r"\baktiv\b", "", clean_line, flags=re.IGNORECASE)
+                    
+                    # Eventuelle Schwingeranzahl am Ende der Zeile heraussuchen
+                    schwinger_count = ""
+                    match_s = re.search(r"(\d+)\s*$", clean_line)
+                    if match_s and int(match_s.group(1)) > 20:
+                        schwinger_count = match_s.group(1)
+                        clean_line = clean_line.replace(schwinger_count, "")
+                    
+                    fest_name = clean_text(re.sub(r"\s+", " ", clean_line))
+                    
+                    # Dem Namen die URL zuordnen falls auffindbar
+                    detail_url = AGENDA_URL
+                    for k, v in links_dict.items():
+                        if k in line or fest_name in k:
+                            detail_url = v
+                            break
 
-                fest_name = clean_text(re.sub(r"\s+", " ", clean_name))
-                
-                # Falls der Name durch das Ersetzen zu kurz wurde, nimm den Text des ersten Links
-                if link and (not fest_name or len(fest_name) < 5):
-                    fest_name = clean_text(link.get_text())
-
-                agenda_entries.append({
-                    "name": fest_name,
-                    "date": date_str,
-                    "url": detail_url,
-                    "schwinger": schwinger_count
-                })
-        except Exception as e:
-            print(f"Fehler beim Parsen einer Zeile: {e}")
+                    if len(fest_name) > 3:
+                        agenda_entries.append({
+                            "name": fest_name,
+                            "date": date_str,
+                            "url": detail_url,
+                            "schwinger": schwinger_count
+                        })
+        except Exception:
             continue
 
     if agenda_entries:
         msg = "📅 <b>VORSCHAU: Aktiv-Schwingfeste an diesem Wochenende</b>\n\n"
         inline_buttons = []
         
-        # Doppelte Einträge über den Namen filtern
         seen = set()
         unique_entries = []
         for f in agenda_entries:
-            if f["name"] not in seen and len(f["name"]) > 3:
+            if f["name"] not in seen:
                 seen.add(f["name"])
                 unique_entries.append(f)
 
