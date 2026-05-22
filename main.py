@@ -14,14 +14,14 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 BASE_URL = "https://arls.esv.ch"
-AGENDA_URL = "https://arls.esv.ch/agenda/"
+PUBLIC_AGENDA_URL = "https://esv.ch/agenda/"
 RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
 STATE_FILE = "state.json"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "de-CH,de;q=0.9,en-US;q=0.8,en;q=0.7",
 }
 
 def load_state():
@@ -71,7 +71,7 @@ def parse_date(date_text):
 
 def is_jung_or_nachwuchs(text):
     text = text.lower()
-    blocked = ["jung", "nachwuchs", "bueb", "bube", "buben", "schüler", "schueler", "knaben"]
+    blocked = ["jung", "nachwuchs", "bueb", "bube", "buben", "schüler", "schueler", "knaben", "jahrg"]
     return any(word in text for word in blocked)
 
 def send_telegram_message(text, reply_markup=None):
@@ -91,7 +91,7 @@ def send_telegram_document(pdf_bytes, filename, caption, reply_markup=None):
     response = requests.post(url, data=data, files=files, timeout=60)
     response.raise_for_status()
 
-# --- Strategische Freitags-Agenda (Auslesung über den gesamten Seiten-Text) ---
+# --- Strategische Freitags-Agenda (Auslesung der stabilen öffentlichen ESV-Agenda) ---
 def check_and_send_agenda(state, is_manual=False):
     now = datetime.now()
     current_calendar_week = now.strftime("%Y-%V")
@@ -102,11 +102,8 @@ def check_and_send_agenda(state, is_manual=False):
         if state["last_agenda_sent"] == current_calendar_week:
             return
 
-    print("Starte Agenda-Lauf: Generiere Vorschau aus arls.esv.ch/agenda/ (Volltext-Modus)...")
-    soup = get_soup(AGENDA_URL)
-    
-    # Gesamten Text der Seite holen und in Zeilen zerlegen
-    page_lines = [clean_text(line) for line in soup.get_text("\n").split("\n") if line.strip()]
+    print("Starte Agenda-Lauf: Generiere Vorschau aus esv.ch/agenda/ ...")
+    soup = get_soup(PUBLIC_AGENDA_URL)
     
     agenda_entries = []
     friday_date = now.date()
@@ -115,48 +112,56 @@ def check_and_send_agenda(state, is_manual=False):
     
     allowed_dates = [saturday, sunday]
     if is_manual:
+        # Bei manuellem Start erweitertes Zeitfenster um das aktuelle Datum herum
         allowed_dates = [friday_date + timedelta(days=i) for i in range(-2, 4)]
 
-    # Auch gezielt nach Links suchen, falls wir URLs brauchen
-    links_dict = {}
-    for link in soup.find_all("a", href=True):
-        link_text = clean_text(link.get_text())
-        if link_text and "anlass=" in link["href"]:
-            links_dict[link_text] = normalise_url(link["href"])
-
-    for line in page_lines:
-        # Prüfen, ob ein Datum in der Zeile existiert
-        date_str = extract_date(line)
+    # Jedes Event auf der neuen ESV-Seite durchgehen
+    for event in soup.find_all(["tr", "div", "article"]):
+        text_content = clean_text(event.get_text(" "))
+        
+        date_str = extract_date(text_content)
         if not date_str:
             continue
             
         try:
             fest_date = parse_date(date_str)
             if fest_date.date() in allowed_dates:
-                # Nur Aktivfeste beachten, Nachwuchs blockieren
-                if "aktiv" in line.lower() and not is_jung_or_nachwuchs(line):
+                # Nachwuchs aussortieren
+                if is_jung_or_nachwuchs(text_content):
+                    continue
+                
+                # Wir suchen nach typischen Merkmalen von Aktivfesten
+                # (Entweder das Wort 'aktiv', Schwingfest, Schwinget, oder Verbandstypen)
+                is_aktiv_fest = any(word in text_content.lower() for word in [
+                    "aktiv", "schwingfest", "schwinget", "kantonal", "gau", "bergkranz", "regional"
+                ])
+                
+                if is_aktiv_fest:
+                    link_el = event.find("a", href=True)
+                    detail_url = urljoin(PUBLIC_AGENDA_URL, link_el["href"]) if link_el else PUBLIC_AGENDA_URL
                     
-                    # Text bereinigen, um den reinen Festnamen zu isolieren
-                    clean_line = line.replace(date_str, "")
-                    clean_line = re.sub(r"\baktiv\b", "", clean_line, flags=re.IGNORECASE)
+                    # Text bereinigen, um einen sauberen Namen zu bekommen
+                    name_raw = text_content.replace(date_str, "")
+                    for word in ["aktiv", "details", "info", "agenda"]:
+                        name_raw = re.sub(r"\b" + word + r"\b", "", name_raw, flags=re.IGNORECASE)
                     
-                    # Eventuelle Schwingeranzahl am Ende der Zeile heraussuchen
+                    # Versuche verbleibende Zahlen (wie Schwingeranzahlen) zu extrahieren
                     schwinger_count = ""
-                    match_s = re.search(r"(\d+)\s*$", clean_line)
-                    if match_s and int(match_s.group(1)) > 20:
-                        schwinger_count = match_s.group(1)
-                        clean_line = clean_line.replace(schwinger_count, "")
-                    
-                    fest_name = clean_text(re.sub(r"\s+", " ", clean_line))
-                    
-                    # Dem Namen die URL zuordnen falls auffindbar
-                    detail_url = AGENDA_URL
-                    for k, v in links_dict.items():
-                        if k in line or fest_name in k:
-                            detail_url = v
-                            break
+                    match_s = re.search(r"\b(\d{2,3})\b", name_raw)
+                    if match_s:
+                        val = match_s.group(1)
+                        # Wenn die Zahl im Bereich realistischer Schwingerzahlen liegt
+                        if 30 <= int(val) <= 300 and val not in date_str:
+                            schwinger_count = val
+                            name_raw = name_raw.replace(val, "")
 
-                    if len(fest_name) > 3:
+                    fest_name = clean_text(re.sub(r"\s+", " ", name_raw))
+                    
+                    # Kürzen falls Reste von Orten/Kategorien am Ende hängen
+                    if len(fest_name) > 80:
+                        fest_name = fest_name[:77] + "..."
+
+                    if len(fest_name) > 5:
                         agenda_entries.append({
                             "name": fest_name,
                             "date": date_str,
@@ -173,8 +178,10 @@ def check_and_send_agenda(state, is_manual=False):
         seen = set()
         unique_entries = []
         for f in agenda_entries:
-            if f["name"] not in seen:
-                seen.add(f["name"])
+            # Duplikate anhand des bereinigten Namens aussortieren
+            short_name = f["name"][:30]
+            if short_name not in seen:
+                seen.add(short_name)
                 unique_entries.append(f)
 
         for f in unique_entries:
@@ -195,7 +202,7 @@ def check_and_send_agenda(state, is_manual=False):
         state["last_agenda_sent"] = current_calendar_week
         save_state(state)
 
-# --- Ranglisten-Überwachung ---
+# --- Ranglisten-Überwachung (Unveränderte Live-Funktion für das Wochenende) ---
 def collect_active_fests():
     soup = get_soup(RANGLISTEN_URL)
     grouped = {}
