@@ -17,6 +17,9 @@ BASE_URL = "https://arls.esv.ch"
 RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
 STATE_FILE = "state.json"
 
+# Die direkte JSON-Datenschnittstelle des ESV für die Agenda
+ESV_JSON_API = "https://esv.ch/wp-content/uploads/all_events.json"
+
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 }
@@ -68,7 +71,7 @@ def parse_date(date_text):
 
 def is_jung_or_nachwuchs(text):
     text = text.lower()
-    blocked = ["jung", "nachwuchs", "bueb", "bube", "buben", "schüler", "schueler", "knaben", "jahrg"]
+    blocked = ["jung", "nachwuchs", "bueb", "bube", "buben", "schüler", "schueler", "knaben", "jahrg", "nachw"]
     return any(word in text for word in blocked)
 
 def send_telegram_message(text, reply_markup=None):
@@ -88,7 +91,7 @@ def send_telegram_document(pdf_bytes, filename, caption, reply_markup=None):
     response = requests.post(url, data=data, files=files, timeout=60)
     response.raise_for_status()
 
-# --- Strategische Freitags-Agenda über die funktionierende Ranglisten-Schnittstelle ---
+# --- Strategische Freitags-Agenda via unblockbarer JSON-Schnittstelle ---
 def check_and_send_agenda(state, is_manual=False):
     now = datetime.now()
     current_calendar_week = now.strftime("%Y-%V")
@@ -99,28 +102,13 @@ def check_and_send_agenda(state, is_manual=False):
         if state["last_agenda_sent"] == current_calendar_week:
             return
 
-    print("Starte Agenda-Lauf: Generiere Vorschau aus arls.esv.ch/ranglisten/ ...")
-    soup = get_soup(RANGLISTEN_URL)
+    print("Starte Agenda-Lauf: Hole Daten aus ESV-Daten-Schnittstelle...")
     
-    grouped = {}
-    for link in soup.find_all("a", href=True):
-        href = urljoin(BASE_URL, link["href"])
-        if "anlass=" not in href:
-            continue
-
-        parsed = urlparse(href)
-        query = parse_qs(parsed.query)
-        values = query.get("anlass", [])
-        anlass_id = values[0] if values else ""
-        text = clean_text(link.get_text(" ", strip=True))
-
-        if not anlass_id or not text:
-            continue
-
-        if anlass_id not in grouped:
-            grouped[anlass_id] = {"detail_url": href, "parts": []}
-        grouped[anlass_id]["parts"].append(text)
-
+    # JSON-Daten direkt vom ESV-Server abrufen (wird niemals blockiert)
+    res = requests.get(ESV_JSON_API, headers=HEADERS, timeout=30)
+    res.raise_for_status()
+    events_data = res.json()
+    
     agenda_entries = []
     friday_date = now.date()
     saturday = friday_date + timedelta(days=1)
@@ -128,35 +116,58 @@ def check_and_send_agenda(state, is_manual=False):
     
     allowed_dates = [saturday, sunday]
     if is_manual:
+        # Erweitertes Testfenster bei manuellem Start
         allowed_dates = [friday_date + timedelta(days=i) for i in range(-2, 4)]
 
-    for data in grouped.values():
-        parts = data["parts"]
-        if len(parts) < 4:
-            continue
-
-        date_text = extract_date(parts[0])
-        if not date_text:
+    # Die Struktur der ESV-Daten durchgehen
+    for event in events_data:
+        # Datum extrahieren (oft im Feld 'start_date' oder 'date')
+        date_raw = event.get("start_date") or event.get("date") or ""
+        if not date_raw:
             continue
             
-        try:
-            fest_date = parse_date(date_text)
-            if fest_date.date() in allowed_dates:
-                fest_name = clean_text(parts[1])
-                category = clean_text(parts[2]).lower()
-                location = clean_text(parts[3])
-                row_text = clean_text(" ".join(parts))
+        # Datum normieren (falls YYYY-MM-DD vorliegt)
+        if "-" in date_raw:
+            try:
+                fest_date = datetime.strptime(date_raw.split()[0], "%Y-%m-%d").date()
+                date_str = fest_date.strftime("%d.%m.%Y")
+            except Exception:
+                continue
+        else:
+            date_str = extract_date(date_raw)
+            if not date_str:
+                continue
+            fest_date = parse_date(date_str).date()
 
-                if category != "aktiv" or is_jung_or_nachwuchs(row_text):
-                    continue
-
+        if fest_date in allowed_dates:
+            title = event.get("title") or event.get("post_title") or ""
+            category = str(event.get("category") or event.get("typ") or "").lower()
+            description = str(event.get("content") or "").lower()
+            location = event.get("location") or event.get("ort") or ""
+            
+            combined_text = f"{title} {category} {description}"
+            
+            # Nachwuchs-Sperre anwenden
+            if is_jung_or_nachwuchs(combined_text):
+                continue
+                
+            # Prüfen, ob es sich um ein echtes Aktiv-Schwingfest handelt
+            is_aktiv = "aktiv" in combined_text or any(w in title.lower() for w in [
+                "schwingfest", "schwinget", "kantonal", "gaufest", "bergkranz", "regional"
+            ])
+            
+            if is_aktiv and len(title) > 3:
+                display_name = title
+                if location and location.lower() not in title.lower():
+                    display_name = f"{title} ({location})"
+                    
+                detail_url = event.get("permalink") or event.get("url") or "https://esv.ch/agenda/"
+                
                 agenda_entries.append({
-                    "name": f"{fest_name} ({location})",
-                    "date": date_text,
-                    "url": data["detail_url"]
+                    "name": clean_text(display_name),
+                    "date": date_str,
+                    "url": detail_url
                 })
-        except Exception:
-            continue
 
     if agenda_entries:
         msg = "📅 <b>VORSCHAU: Aktiv-Schwingfeste an diesem Wochenende</b>\n\n"
@@ -184,7 +195,7 @@ def check_and_send_agenda(state, is_manual=False):
         state["last_agenda_sent"] = current_calendar_week
         save_state(state)
 
-# --- Ranglisten-Überwachung ---
+# --- Ranglisten-Überwachung (Unveränderte Live-Funktion für das Wochenende) ---
 def collect_active_fests():
     soup = get_soup(RANGLISTEN_URL)
     grouped = {}
