@@ -19,7 +19,7 @@ RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
 STATE_FILE = "state.json"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 Schwingen-Live-Bot/1.3",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
 }
@@ -111,19 +111,15 @@ def check_and_send_agenda(state, is_manual=False):
     saturday = friday_date + timedelta(days=1)
     sunday = friday_date + timedelta(days=2)
 
-    # Durchsuche die Tabelle der Agenda-Seite
-    for row in soup.find_all("tr"):
-        cells = row.find_all("td")
-        if not cells or len(cells) < 3:
-            continue
-            
+    # Durchsuche alle Zeilen und Listenelemente auf der Seite flexibel
+    for row in soup.find_all(["tr", "div", "li"]):
         row_text = clean_text(row.get_text(" "))
         
-        # Ignoriere Nachwuchsfeste rigoros
-        if is_jung_or_nachwuchs(row_text):
+        # Sicherstellen, dass es ein Aktivfest ist und kein Nachwuchs
+        if "aktiv" not in row_text.lower() or is_jung_or_nachwuchs(row_text):
             continue
             
-        # Datum extrahieren
+        # Datum aus der Zeile extrahieren
         date_str = extract_date(row_text)
         if not date_str:
             continue
@@ -131,8 +127,7 @@ def check_and_send_agenda(state, is_manual=False):
         try:
             fest_date = parse_date(date_str)
             
-            # Prüfen, ob das Fest an diesem anstehenden Wochenende stattfindet
-            # (Bei manuellem Start weiten wir den Filter auf +/- 3 Tage aus, damit wir immer was sehen!)
+            # Filter für das anstehende Wochenende (+/-3 Tage Toleranz bei manuellem Start)
             allowed_dates = [saturday, sunday]
             if is_manual:
                 allowed_dates = [friday_date + timedelta(days=i) for i in range(-2, 4)]
@@ -141,26 +136,31 @@ def check_and_send_agenda(state, is_manual=False):
                 link = row.find("a", href=True)
                 detail_url = normalise_url(link["href"]) if link else AGENDA_URL
                 
-                # Versuche Namen und Schwingeranzahl aus den Spalten zu ziehen
-                fest_name = clean_text(cells[1].get_text(" ")) if len(cells) > 1 else "Schwingfest"
-                # Datum aus dem Namen entfernen, falls vorhanden
-                fest_name = f_name = date_str.join(fest_name.split(date_str)[1:]) if date_str in fest_name else fest_name
-                fest_name = clean_text(re.sub(r"\s+", " ", fest_name))
-                if not fest_name or len(fest_name) < 4:
-                    fest_name = clean_text(cells[0].get_text(" "))
+                # Intelligenten Namen extrahieren: Wir bereinigen den Text von Datum, "aktiv" und Orten
+                clean_name = row_text
+                clean_name = clean_name.replace(date_str, "")
                 
-                # Schwingeranzahl suchen (oft in der letzten Spalte oder im Text)
+                # Entferne das isolierte Wort "aktiv"
+                clean_name = re.sub(r"\baktiv\b", "", clean_name, flags=re.IGNORECASE)
+                
+                # Schwingeranzahl auslesen falls vorhanden (z.B. "Anzahl Schwinger 160")
                 schwinger_count = ""
-                match_s = re.search(r"(\d+)\s*(?:Schwinger|Teilnehmer|Angemeldet)", row_text, flags=re.IGNORECASE)
+                match_s = re.search(r"Anzahl\s*Schwinger\s*(\d+)", clean_name, flags=re.IGNORECASE)
                 if match_s:
+                    clean_name = clean_name.replace(match_s.group(0), "")
                     schwinger_count = match_s.group(1)
                 else:
-                    # Alternativ letzte Spalten prüfen
-                    for cell in reversed(cells):
-                        c_txt = clean_text(cell.get_text())
-                        if c_txt.isdigit() and int(c_txt) > 20:
-                            schwinger_count = c_txt
-                            break
+                    # Alternativer Check auf eine alleinstehende Zahl am Ende der Zeile
+                    match_end = re.search(r"\b(\d{2,3})\b$", clean_name)
+                    if match_end and int(match_end.group(1)) > 30:
+                        clean_name = clean_name.replace(match_end.group(0), "")
+                        schwinger_count = match_end.group(1)
+
+                fest_name = clean_text(re.sub(r"\s+", " ", clean_name))
+                
+                # Falls der Name durch das Ersetzen zu kurz wurde, nimm den Text des ersten Links
+                if link and (not fest_name or len(fest_name) < 5):
+                    fest_name = clean_text(link.get_text())
 
                 agenda_entries.append({
                     "name": fest_name,
@@ -176,11 +176,11 @@ def check_and_send_agenda(state, is_manual=False):
         msg = "📅 <b>VORSCHAU: Aktiv-Schwingfeste an diesem Wochenende</b>\n\n"
         inline_buttons = []
         
-        # Doppelte Einträge filtern
+        # Doppelte Einträge über den Namen filtern
         seen = set()
         unique_entries = []
         for f in agenda_entries:
-            if f["name"] not in seen:
+            if f["name"] not in seen and len(f["name"]) > 3:
                 seen.add(f["name"])
                 unique_entries.append(f)
 
@@ -196,9 +196,7 @@ def check_and_send_agenda(state, is_manual=False):
         send_telegram_message(msg, {"inline_keyboard": inline_buttons})
         print("Agenda-Vorschau erfolgreich im Telegram-Kanal gepostet.")
     else:
-        print("Keine anstehenden Aktivfeste für das Wochenende in der Agenda gefunden.")
-        if is_manual:
-            send_telegram_message("📅 <b>VORSCHAU:</b> Aktuell sind für dieses Wochenende keine Aktivfeste in der ESV-Agenda eingetragen.")
+        print("Keine anstehenden Aktivfeste für das Wochenende in der Agenda gefunden. Kanal bleibt stumm.")
         
     if not is_manual:
         state["last_agenda_sent"] = current_calendar_week
@@ -345,8 +343,6 @@ def main():
         
     state = load_state()
     
-    # Prüfen, ob der Lauf manuell über GitHub Actions gestartet wurde
-    # (Wir erkennen das, wenn ein spezielles Kennzeichen gesetzt ist oder erzwingen es beim Testen)
     is_manual_run = os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch"
     
     try:
