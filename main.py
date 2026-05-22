@@ -2,10 +2,12 @@ import os
 import re
 import json
 import time
+import hashlib
 from io import BytesIO
 from html import escape
 from datetime import datetime
 from urllib.parse import urljoin, urlparse, parse_qs
+
 import requests
 from bs4 import BeautifulSoup
 
@@ -16,79 +18,221 @@ BASE_URL = "https://arls.esv.ch"
 RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
 STATE_FILE = "state.json"
 
-HEADERS = {"User-Agent": "Mozilla/5.0 Schwingen-Live-Bot/1.4"}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+}
+
+def get_file_hash(content):
+    """Generiert einen unfehlbaren digitalen Fingerabdruck des PDF-Inhalts."""
+    return hashlib.md5(content).hexdigest()
 
 def load_state():
     if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r", encoding="utf-8") as f: return json.load(f)
-    return {"known_pdfs": {}, "baseline_done": False}
+        with open(STATE_FILE, "r", encoding="utf-8") as file:
+            state = json.load(file)
+    else:
+        state = {}
+
+    # Sicherstellen, dass die neuen, sicheren Hash-Strukturen existieren
+    if "known_hashes" not in state or not isinstance(state["known_hashes"], list):
+        state["known_hashes"] = []
+
+    if "baseline_done" not in state:
+        state["baseline_done"] = False
+
+    return state
 
 def save_state(state):
-    with open(STATE_FILE, "w", encoding="utf-8") as f: json.dump(state, f, ensure_ascii=False, indent=2)
+    with open(STATE_FILE, "w", encoding="utf-8") as file:
+        json.dump(state, file, ensure_ascii=False, indent=2)
+
+def clean_text(text):
+    return " ".join(text.replace("\xa0", " ").split()).strip()
 
 def get_soup(url):
     response = requests.get(url, headers=HEADERS, timeout=30)
     response.raise_for_status()
     return BeautifulSoup(response.text, "html.parser")
 
-def send_telegram_document(pdf_bytes, filename, caption):
+def extract_date(text):
+    match = re.search(r"\d{2}\.\d{2}\.?\d{4}", text)
+    if not match:
+        return ""
+    return match.group(0).replace("..", ".")
+
+def parse_date(date_text):
+    return datetime.strptime(date_text, "%d.%m.%Y")
+
+def is_jung_or_nachwuchs(text):
+    text = text.lower()
+    blocked = ["jung", "nachwuchs", "bueb", "bube", "buben", "schüler", "schueler", "knaben"]
+    return any(word in text for word in blocked)
+
+def send_telegram_document(pdf_bytes, filename, caption, reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-    files = {"document": (filename, BytesIO(pdf_bytes), "application/pdf")}
     data = {"chat_id": CHAT_ID, "caption": caption[:1024], "parse_mode": "HTML"}
-    requests.post(url, data=data, files=files, timeout=60).raise_for_status()
+    if reply_markup:
+        data["reply_markup"] = json.dumps(reply_markup)
+    files = {"document": (filename, BytesIO(pdf_bytes), "application/pdf")}
+    response = requests.post(url, data=data, files=files, timeout=60)
+    response.raise_for_status()
+
+def collect_active_fests():
+    soup = get_soup(RANGLISTEN_URL)
+    grouped = {}
+
+    for link in soup.find_all("a", href=True):
+        href = urljoin(BASE_URL, link["href"])
+        if "anlass=" not in href:
+            continue
+
+        parsed = urlparse(href)
+        query = parse_qs(parsed.query)
+        values = query.get("anlass", [])
+        anlass_id = values[0] if values else ""
+        text = clean_text(link.get_text(" ", strip=True))
+
+        if not anlass_id or not text:
+            continue
+
+        if anlass_id not in grouped:
+            grouped[anlass_id] = {"detail_url": href, "parts": []}
+        grouped[anlass_id]["parts"].append(text)
+
+    entries = []
+    for data in grouped.values():
+        parts = data["parts"]
+        if len(parts) < 5:
+            continue
+
+        date_text = extract_date(parts[0])
+        fest_name = clean_text(parts[1])
+        category = clean_text(parts[2]).lower()
+        location = clean_text(parts[3])
+        row_text = clean_text(" ".join(parts))
+
+        if not date_text or category != "aktiv" or is_jung_or_nachwuchs(row_text):
+            continue
+
+        entries.append({
+            "detail_url": data["detail_url"],
+            "date_text": date_text,
+            "fest_name": fest_name,
+            "location": location,
+        })
+
+    if not entries:
+        return []
+
+    newest_date = max(entries, key=lambda x: parse_date(x["date_text"]))["date_text"]
+    return [e for e in entries if e["date_text"] == newest_date]
 
 def should_track_pdf(href, title):
     combined = f"{href} {title}".lower()
-    if not href.lower().split("?")[0].endswith(".pdf"): return False
-    return any(word in combined for word in ["statistik", "-st.pdf", "_st.pdf", "schlussrang", "-rl.pdf", "_rl.pdf"])
+    if not href.lower().split("?")[0].endswith(".pdf"):
+        return False
+
+    blocked = ["startliste", "einteilung", "notizblatt", "paarung", "zwischenrang"]
+    if any(word in combined for word in blocked):
+        return False
+
+    return (
+        "statistik" in combined or "-st.pdf" in combined or "_st.pdf" in combined or
+        "schlussrangliste" in combined or "schlussrang" in combined or 
+        "-rl.pdf" in combined or "_rl.pdf" in combined
+    )
+
+def process_fest(fest, state):
+    soup = get_soup(fest["detail_url"])
+    page_text = clean_text(soup.get_text(" ", strip=True))
+    
+    # Aktivschwinger auslesen
+    match_schwinger = re.search(r"Anzahl Schwinger\s+(\d+)", page_text, flags=re.IGNORECASE)
+    schwinger = match_schwinger.group(1) if match_schwinger else ""
+    
+    # Fest-Webseite suchen
+    website = ""
+    for link in soup.find_all("a", href=True):
+        href = link["href"].strip()
+        if href.startswith("http") and "arls.esv.ch" not in href and "esv.ch" not in href:
+            website = href
+            break
+
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
+        title = clean_text(link.get_text(" ", strip=True))
+
+        if not should_track_pdf(href, title):
+            continue
+
+        pdf_url = urljoin(BASE_URL, href)
+
+        try:
+            # Download des PDFs für die Inhaltsprüfung (Hash)
+            res = requests.get(pdf_url, headers=HEADERS, timeout=60)
+            res.raise_for_status()
+            pdf_bytes = res.content
+            
+            # Einzigartigen Fingerabdruck der Datei berechnen
+            pdf_hash = get_file_hash(pdf_bytes)
+            
+            # DOPPELGÄNGER-SCHUTZ: Wurde exakt dieser Inhalt schon mal verarbeitet?
+            if pdf_hash in state["known_hashes"]:
+                continue
+
+            # In die Historie eintragen und Zustand sofort speichern
+            state["known_hashes"].append(pdf_hash)
+            save_state(state)
+
+            # Wenn der Bot im ersten Lauf (Baseline) ist, sendet er nichts, um alte Altlasten zu ignorieren
+            if not state["baseline_done"]:
+                print(f"Stille Sicherung (Baseline-Hash): {pdf_url}")
+                continue
+
+            # Dokumententyp bestimmen
+            doc_type = "🏆 Schlussrangliste" if "schluss" in pdf_url.lower() or "rl" in pdf_url.lower() else "📊 Statistik"
+            
+            # Minimalistischer Nachrichtenaufbau nach Wunsch
+            caption = f"🏟 <b>{escape(fest['fest_name'])}</b>\n"
+            if schwinger:
+                caption += f"🤼 <b>{escape(schwinger)} Aktivschwinger</b>\n"
+            caption += f"📝 <b>{doc_type}</b>"
+
+            # Saubere Inline-Buttons für die Telegram-Nachricht
+            buttons = []
+            if website:
+                buttons.append({"text": "🌐 Fest-Webseite", "url": website})
+            buttons.append({"text": "🔗 Direktlink ESV", "url": pdf_url})
+
+            filename = pdf_url.split("/")[-1].split("?")[0]
+            
+            # PDF direkt mit der Nachricht mitsenden
+            send_telegram_document(pdf_bytes, filename, caption, {"inline_keyboard": [buttons]})
+            print(f"Erfolgreich live gepostet: {filename}")
+            
+            time.sleep(2)
+        except Exception as exc:
+            print(f"Fehler bei Verarbeitung von {pdf_url}: {exc}")
 
 def main():
-    state = load_state()
-    soup = get_soup(RANGLISTEN_URL)
-    
-    # 1. Alle Feste sammeln
-    grouped = {}
-    for link in soup.find_all("a", href=True):
-        href = urljoin(BASE_URL, link["href"])
-        if "anlass=" not in href: continue
-        anlass_id = parse_qs(urlparse(href).query).get("anlass", [""])[0]
-        text = " ".join(link.get_text().split())
-        if anlass_id and text:
-            if anlass_id not in grouped: grouped[anlass_id] = {"url": href, "parts": []}
-            grouped[anlass_id]["parts"].append(text)
-
-    # 2. Feste prüfen und PDFs verarbeiten
-    for data in grouped.values():
-        parts = data["parts"]
-        if len(parts) < 5 or "aktiv" not in parts[2].lower(): continue
+    if not BOT_TOKEN or not CHAT_ID:
+        raise ValueError("BOT_TOKEN oder CHAT_ID fehlt in den GitHub Secrets.")
         
-        detail_soup = get_soup(data["url"])
-        page_text = " ".join(detail_soup.get_text().split())
-        schwinger = re.search(r"Anzahl Schwinger\s+(\d+)", page_text, re.I)
-        schwinger = schwinger.group(1) if schwinger else "Unbekannt"
-
-        for link in detail_soup.find_all("a", href=True):
-            if should_track_pdf(link["href"], link.get_text()):
-                pdf_url = urljoin(BASE_URL, link["href"])
-                if pdf_url in state["known_pdfs"]: continue
-                
-                # Datei laden
-                res = requests.get(pdf_url, headers=HEADERS, timeout=60)
-                pdf_bytes = res.content
-                
-                if state["baseline_done"]:
-                    doc_type = "🏆 Schlussrangliste" if "rl" in pdf_url.lower() else "📊 Statistik"
-                    caption = f"🏟 <b>{parts[1]}</b>\n📍 {parts[3]}\n🤼 <b>{schwinger} Aktivschwinger</b>\n📝 {doc_type}"
-                    send_telegram_document(pdf_bytes, pdf_url.split("/")[-1], caption)
-                
-                state["known_pdfs"][pdf_url] = {"fest": parts[1]}
-                save_state(state)
-                time.sleep(2)
-
-    if not state["baseline_done"]:
-        state["baseline_done"] = True
-        save_state(state)
-        print("Live-Ticker bereit und Baseline gesetzt.")
+    state = load_state()
+    
+    try:
+        fests = collect_active_fests()
+        for fest in fests:
+            process_fest(fest, state)
+            
+        if not state["baseline_done"]:
+            state["baseline_done"] = True
+            save_state(state)
+            print("Baseline erfolgreich im Live-Betrieb gesetzt! Ab jetzt wird scharf geschaltet.")
+    except Exception as exc:
+        print(f"Fehler beim Ranglisten-Lauf: {exc}")
 
 if __name__ == "__main__":
     main()
