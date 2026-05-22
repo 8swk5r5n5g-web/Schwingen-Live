@@ -14,6 +14,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 BASE_URL = "https://arls.esv.ch"
+AGENDA_URL = "https://arls.esv.ch/agenda/"
 RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
 STATE_FILE = "state.json"
 
@@ -90,79 +91,118 @@ def send_telegram_document(pdf_bytes, filename, caption, reply_markup=None):
     response = requests.post(url, data=data, files=files, timeout=60)
     response.raise_for_status()
 
-# --- Strategische Freitags-Agenda (12:00 - 13:00 Uhr) ---
-def check_and_send_agenda(state):
+# --- Strategische Freitags-Agenda (Auslesung der echten Agenda-Tabelle) ---
+def check_and_send_agenda(state, is_manual=False):
     now = datetime.now()
-    
-    # Wochentag 4 = Freitag. Auslösung exakt in der Mittagstunde (Stunde 12)
-    if now.weekday() != 4 or now.hour != 12:
-        return
-
     current_calendar_week = now.strftime("%Y-%V")
-    if state["last_agenda_sent"] == current_calendar_week:
-        return  # Bereits in dieser Mittagspause gesendet
+    
+    # Automatisch nur Freitags um die Mittagszeit, ausser es wird manuell erzwungen
+    if not is_manual:
+        if now.weekday() != 4 or now.hour != 12:
+            return
+        if state["last_agenda_sent"] == current_calendar_week:
+            return
 
-    print("Mittags-Lauf: Generiere Vorschau aus der ESV-Agenda...")
-    soup = get_soup(BASE_URL)
+    print("Starte Agenda-Lauf: Generiere Vorschau aus arls.esv.ch/agenda/ ...")
+    soup = get_soup(AGENDA_URL)
     
     agenda_entries = []
-    for row in soup.find_all(["tr", "li", "div"]):
-        link = row.find("a", href=True) if hasattr(row, "find") else None
-        if not link or "anlass=" not in link["href"]:
+    friday_date = now.date()
+    saturday = friday_date + timedelta(days=1)
+    sunday = friday_date + timedelta(days=2)
+
+    # Durchsuche die Tabelle der Agenda-Seite
+    for row in soup.find_all("tr"):
+        cells = row.find_all("td")
+        if not cells or len(cells) < 3:
             continue
             
-        text = clean_text(row.get_text(" "))
-        date_str = extract_date(text)
+        row_text = clean_text(row.get_text(" "))
+        
+        # Ignoriere Nachwuchsfeste rigoros
+        if is_jung_or_nachwuchs(row_text):
+            continue
+            
+        # Datum extrahieren
+        date_str = extract_date(row_text)
         if not date_str:
             continue
             
         try:
             fest_date = parse_date(date_str)
-            friday_date = now.date()
-            saturday = friday_date + timedelta(days=1)
-            sunday = friday_date + timedelta(days=2)
             
-            # Filtert exakt den anstehenden Samstag und Sonntag für die Aktivschwinger heraus
-            if fest_date.date() in [saturday, sunday] and not is_jung_or_nachwuchs(text):
-                fest_name = text.replace(date_str, "").strip()
-                fest_name = re.sub(r"\s+", " ", fest_name)
+            # Prüfen, ob das Fest an diesem anstehenden Wochenende stattfindet
+            # (Bei manuellem Start weiten wir den Filter auf +/- 3 Tage aus, damit wir immer was sehen!)
+            allowed_dates = [saturday, sunday]
+            if is_manual:
+                allowed_dates = [friday_date + timedelta(days=i) for i in range(-2, 4)]
+
+            if fest_date.date() in allowed_dates:
+                link = row.find("a", href=True)
+                detail_url = normalise_url(link["href"]) if link else AGENDA_URL
                 
-                detail_url = normalise_url(link["href"])
-                fest_website = detail_url  # Backup-Link falls keine Fest-Webseite existiert
+                # Versuche Namen und Schwingeranzahl aus den Spalten zu ziehen
+                fest_name = clean_text(cells[1].get_text(" ")) if len(cells) > 1 else "Schwingfest"
+                # Datum aus dem Namen entfernen, falls vorhanden
+                fest_name = f_name = date_str.join(fest_name.split(date_str)[1:]) if date_str in fest_name else fest_name
+                fest_name = clean_text(re.sub(r"\s+", " ", fest_name))
+                if not fest_name or len(fest_name) < 4:
+                    fest_name = clean_text(cells[0].get_text(" "))
                 
-                # Versuche die offizielle Fest-Webseite auszulesen
-                try:
-                    detail_soup = get_soup(detail_url)
-                    for d_link in detail_soup.find_all("a", href=True):
-                        d_href = d_link["href"].strip()
-                        if d_href.startswith("http") and "arls.esv.ch" not in d_href and "esv.ch" not in d_href:
-                            fest_website = d_href
+                # Schwingeranzahl suchen (oft in der letzten Spalte oder im Text)
+                schwinger_count = ""
+                match_s = re.search(r"(\d+)\s*(?:Schwinger|Teilnehmer|Angemeldet)", row_text, flags=re.IGNORECASE)
+                if match_s:
+                    schwinger_count = match_s.group(1)
+                else:
+                    # Alternativ letzte Spalten prüfen
+                    for cell in reversed(cells):
+                        c_txt = clean_text(cell.get_text())
+                        if c_txt.isdigit() and int(c_txt) > 20:
+                            schwinger_count = c_txt
                             break
-                except Exception:
-                    pass
 
                 agenda_entries.append({
                     "name": fest_name,
                     "date": date_str,
-                    "url": fest_website
+                    "url": detail_url,
+                    "schwinger": schwinger_count
                 })
-        except Exception:
+        except Exception as e:
+            print(f"Fehler beim Parsen einer Zeile: {e}")
             continue
 
-    if agenda_entries and state["baseline_done"]:
-        msg = "📅 <b>VORSCHAU: Schwingfeste an diesem Wochenende</b>\n\n"
+    if agenda_entries:
+        msg = "📅 <b>VORSCHAU: Aktiv-Schwingfeste an diesem Wochenende</b>\n\n"
         inline_buttons = []
+        
+        # Doppelte Einträge filtern
+        seen = set()
+        unique_entries = []
         for f in agenda_entries:
-            msg += f"🏟 <b>{escape(f['name'])}</b>\n📍 {escape(f['date'])}\n\n"
-            inline_buttons.append([{"text": f"🌐 Website: {f['name'][:22]}", "url": f["url"]}])
+            if f["name"] not in seen:
+                seen.add(f["name"])
+                unique_entries.append(f)
+
+        for f in unique_entries:
+            msg += f"🏟 <b>{escape(f['name'])}</b>\n📅 {escape(f['date'])}\n"
+            if f["schwinger"]:
+                msg += f"🤼 Gemeldete Aktivschwinger: <b>{escape(f['schwinger'])}</b>\n"
+            msg += "\n"
+            inline_buttons.append([{"text": f"🔗 Details: {f['name'][:22]}", "url": f["url"]}])
             
         msg += "💪 <i>Allen Schwingern ein erfolgreiches und verletzungsfreies Wochenende!</i>"
         
         send_telegram_message(msg, {"inline_keyboard": inline_buttons})
-        print("Agenda-Update erfolgreich im Kanal gepostet.")
+        print("Agenda-Vorschau erfolgreich im Telegram-Kanal gepostet.")
+    else:
+        print("Keine anstehenden Aktivfeste für das Wochenende in der Agenda gefunden.")
+        if is_manual:
+            send_telegram_message("📅 <b>VORSCHAU:</b> Aktuell sind für dieses Wochenende keine Aktivfeste in der ESV-Agenda eingetragen.")
         
-    state["last_agenda_sent"] = current_calendar_week
-    save_state(state)
+    if not is_manual:
+        state["last_agenda_sent"] = current_calendar_week
+        save_state(state)
 
 # --- Ranglisten-Überwachung ---
 def collect_active_fests():
@@ -305,8 +345,12 @@ def main():
         
     state = load_state()
     
+    # Prüfen, ob der Lauf manuell über GitHub Actions gestartet wurde
+    # (Wir erkennen das, wenn ein spezielles Kennzeichen gesetzt ist oder erzwingen es beim Testen)
+    is_manual_run = os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch"
+    
     try:
-        check_and_send_agenda(state)
+        check_and_send_agenda(state, is_manual=is_manual_run)
     except Exception as exc:
         print(f"Fehler bei Agenda: {exc}")
         
