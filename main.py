@@ -14,11 +14,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 BASE_URL = "https://arls.esv.ch"
+AGENDA_URL = "https://arls.esv.ch/agenda/"
 RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
 STATE_FILE = "state.json"
-
-# Die direkte JSON-Datenschnittstelle des ESV für die Agenda
-ESV_JSON_API = "https://esv.ch/wp-content/uploads/all_events.json"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -52,9 +50,6 @@ def save_state(state):
 def clean_text(text):
     return " ".join(text.replace("\xa0", " ").split()).strip()
 
-def normalise_url(url):
-    return urljoin(BASE_URL, url) if not url.startswith("http") else url
-
 def get_soup(url):
     response = requests.get(url, headers=HEADERS, timeout=30)
     response.raise_for_status()
@@ -71,7 +66,7 @@ def parse_date(date_text):
 
 def is_jung_or_nachwuchs(text):
     text = text.lower()
-    blocked = ["jung", "nachwuchs", "bueb", "bube", "buben", "schüler", "schueler", "knaben", "jahrg", "nachw"]
+    blocked = ["jung", "nachwuchs", "bueb", "bube", "buben", "schüler", "schueler", "knaben", "jahrg", "training"]
     return any(word in text for word in blocked)
 
 def send_telegram_message(text, reply_markup=None):
@@ -91,7 +86,7 @@ def send_telegram_document(pdf_bytes, filename, caption, reply_markup=None):
     response = requests.post(url, data=data, files=files, timeout=60)
     response.raise_for_status()
 
-# --- Strategische Freitags-Agenda via unblockbarer JSON-Schnittstelle ---
+# --- Strategische Freitags-Agenda über arls.esv.ch/agenda/ ---
 def check_and_send_agenda(state, is_manual=False):
     now = datetime.now()
     current_calendar_week = now.strftime("%Y-%V")
@@ -102,12 +97,8 @@ def check_and_send_agenda(state, is_manual=False):
         if state["last_agenda_sent"] == current_calendar_week:
             return
 
-    print("Starte Agenda-Lauf: Hole Daten aus ESV-Daten-Schnittstelle...")
-    
-    # JSON-Daten direkt vom ESV-Server abrufen (wird niemals blockiert)
-    res = requests.get(ESV_JSON_API, headers=HEADERS, timeout=30)
-    res.raise_for_status()
-    events_data = res.json()
+    print("Starte Agenda-Lauf: Hole Daten von arls.esv.ch/agenda/ ...")
+    soup = get_soup(AGENDA_URL)
     
     agenda_entries = []
     friday_date = now.date()
@@ -116,58 +107,46 @@ def check_and_send_agenda(state, is_manual=False):
     
     allowed_dates = [saturday, sunday]
     if is_manual:
-        # Erweitertes Testfenster bei manuellem Start
         allowed_dates = [friday_date + timedelta(days=i) for i in range(-2, 4)]
 
-    # Die Struktur der ESV-Daten durchgehen
-    for event in events_data:
-        # Datum extrahieren (oft im Feld 'start_date' oder 'date')
-        date_raw = event.get("start_date") or event.get("date") or ""
-        if not date_raw:
+    # Jede Zeile (tr) in der Tabelle auf arls.esv.ch/agenda/ auslesen
+    for row in soup.find_all("tr"):
+        cells = row.find_all("td")
+        if not cells or len(cells) < 3:
             continue
             
-        # Datum normieren (falls YYYY-MM-DD vorliegt)
-        if "-" in date_raw:
-            try:
-                fest_date = datetime.strptime(date_raw.split()[0], "%Y-%m-%d").date()
-                date_str = fest_date.strftime("%d.%m.%Y")
-            except Exception:
-                continue
-        else:
-            date_str = extract_date(date_raw)
-            if not date_str:
-                continue
+        row_text = clean_text(row.get_text(" "))
+        date_str = extract_date(row_text)
+        if not date_str:
+            continue
+            
+        try:
             fest_date = parse_date(date_str).date()
-
-        if fest_date in allowed_dates:
-            title = event.get("title") or event.get("post_title") or ""
-            category = str(event.get("category") or event.get("typ") or "").lower()
-            description = str(event.get("content") or "").lower()
-            location = event.get("location") or event.get("ort") or ""
-            
-            combined_text = f"{title} {category} {description}"
-            
-            # Nachwuchs-Sperre anwenden
-            if is_jung_or_nachwuchs(combined_text):
-                continue
+            if fest_date in allowed_dates:
+                # Nachwuchs und Trainingstage blockieren
+                if is_jung_or_nachwuchs(row_text):
+                    continue
                 
-            # Prüfen, ob es sich um ein echtes Aktiv-Schwingfest handelt
-            is_aktiv = "aktiv" in combined_text or any(w in title.lower() for w in [
-                "schwingfest", "schwinget", "kantonal", "gaufest", "bergkranz", "regional"
-            ])
-            
-            if is_aktiv and len(title) > 3:
-                display_name = title
-                if location and location.lower() not in title.lower():
-                    display_name = f"{title} ({location})"
+                # Prüfen, ob die Kategorie 'aktiv' lautet
+                is_aktiv = "aktiv" in row_text.lower() or any(w in row_text.lower() for w in ["schwingfest", "schwinget"])
+                
+                if is_aktiv:
+                    # Link zum Fest extrahieren falls vorhanden
+                    link_el = row.find("a", href=True)
+                    detail_url = urljoin(BASE_URL, link_el["href"]) if link_el else RANGLISTEN_URL
                     
-                detail_url = event.get("permalink") or event.get("url") or "https://esv.ch/agenda/"
-                
-                agenda_entries.append({
-                    "name": clean_text(display_name),
-                    "date": date_str,
-                    "url": detail_url
-                })
+                    # Den Namen extrahieren (normalerweise das zweite Element oder Text vor 'aktiv')
+                    pure_text = row_text.replace(date_str, "").replace("aktiv", "")
+                    fest_name = clean_text(re.sub(r"\s+", " ", pure_text))
+                    
+                    if len(fest_name) > 5:
+                        agenda_entries.append({
+                            "name": fest_name,
+                            "date": date_str,
+                            "url": detail_url
+                        })
+        except Exception:
+            continue
 
     if agenda_entries:
         msg = "📅 <b>VORSCHAU: Aktiv-Schwingfeste an diesem Wochenende</b>\n\n"
@@ -182,20 +161,20 @@ def check_and_send_agenda(state, is_manual=False):
 
         for f in unique_entries:
             msg += f"🏟 <b>{escape(f['name'])}</b>\n📅 {escape(f['date'])}\n\n"
-            inline_buttons.append([{"text": f"🔗 Details: {f['name'][:22]}", "url": f["url"]}])
+            inline_buttons.append([{"text": f"🔗 Live-Ticker: {f['name'][:22]}", "url": f["url"]}])
             
         msg += "💪 <i>Allen Schwingern ein erfolgreiches und verletzungsfreies Wochenende!</i>"
         
         send_telegram_message(msg, {"inline_keyboard": inline_buttons})
-        print("Agenda-Vorschau erfolgreich im Telegram-Kanal gepostet.")
+        print("Agenda-Vorschau erfolgreich über arls.esv.ch gepostet.")
     else:
-        print("Keine anstehenden Aktivfeste für das Wochenende in der Agenda gefunden. Kanal bleibt stumm.")
+        print("Keine anstehenden Aktivfeste für das Wochenende in der arls-Agenda gefunden. Kanal bleibt stumm.")
         
     if not is_manual:
         state["last_agenda_sent"] = current_calendar_week
         save_state(state)
 
-# --- Ranglisten-Überwachung (Unveränderte Live-Funktion für das Wochenende) ---
+# --- Ranglisten-Überwachung (Live-Funktion) ---
 def collect_active_fests():
     soup = get_soup(RANGLISTEN_URL)
     grouped = {}
@@ -335,7 +314,6 @@ def main():
         raise ValueError("BOT_TOKEN oder CHAT_ID fehlt in GitHub Secrets.")
         
     state = load_state()
-    
     is_manual_run = os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch"
     
     try:
