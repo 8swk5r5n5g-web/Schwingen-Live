@@ -62,9 +62,6 @@ def extract_date_from_text(text):
     match = re.search(r"\d{2}\.\d{2}\.?\d{4}", text)
     return match.group(0).replace("..", ".") if match else ""
 
-def parse_date(date_text):
-    return datetime.strptime(date_text, "%d.%m.%Y")
-
 def is_jung_or_nachwuchs(text):
     text = text.lower()
     blocked_words = ["jung", "nachwuchs", "bueb", "bube", "buben", "schüler", "schueler", "knaben"]
@@ -128,13 +125,22 @@ def collect_active_fests():
 
 def get_gang_nummer(href, link_text):
     combined = f"{href} {link_text}".lower()
-    if combined.strip() == "statistik" or "statistik.pdf" in href.lower():
-        return 99
-    gang_match = re.search(r"(\d+)\.?\s*(gang|g\b|gängen)", combined)
+    
+    # Wenn im Text "statistik" steht, aber KEINE Zahl 1-5 vorkommt -> Finale Statistik (99)
+    gang_match = re.search(r"\b([1-5])\b\.?\s*(gang|g\b)", combined)
     if gang_match:
         return int(gang_match.group(1))
-    zahlen = re.findall(r"\b([1-6])\b", combined)
-    return int(zahlen[-1]) if zahlen else 0
+        
+    # Alternativ nach reinen Zahlen 1-5 im Text suchen
+    zahlen = re.findall(r"\b([1-5])\b", combined)
+    if zahlen:
+        return int(zahlen[-1])
+        
+    # Wenn es eine Statistik ist, aber keine Gangnummer 1-5 hat -> Finale Statistik
+    if "statistik" in combined:
+        return 99
+        
+    return 0
 
 def get_pdf_title(href, link_text, gang_num):
     text = clean_text(link_text)
@@ -174,9 +180,7 @@ def process_fest(fest, state, is_baseline_run):
     buttons = [{"text": "🌐 Fest-Webseite", "url": website}] if website else []
     reply_markup = {"inline_keyboard": [buttons]} if buttons else None
 
-    statistiken = []
-    schlussranglisten = []
-
+    # Jedes gefundene PDF einzeln durchgehen und verarbeiten
     for link in soup.find_all("a", href=True):
         href = link["href"]
         link_text = clean_text(link.get_text(" ", strip=True))
@@ -197,44 +201,31 @@ def process_fest(fest, state, is_baseline_run):
         filename = pdf_url.split("/")[-1].split("?")[0]
         storage_key = f"{fest['anlass_id']}_{filename}"
 
-        if storage_key in state["known_pdfs"]:
-            continue
-
         gang = get_gang_nummer(href, link_text)
 
-        if is_rl:
-            schlussranglisten.append({"url": pdf_url, "href": href, "link_text": link_text, "gang": gang, "key": storage_key})
-        elif is_stat:
-            statistiken.append({"url": pdf_url, "href": href, "link_text": link_text, "gang": gang, "key": storage_key})
+        # Dokument direkt zur Verarbeitung schicken
+        verarbeite_dokument(pdf_url, storage_key, filename, href, link_text, gang, fest, state, reply_markup, schwinger_txt, is_baseline_run)
 
-    if statistiken:
-        neueste_stat = max(statistiken, key=lambda x: x["gang"])
-        verarbeite_dokument(neueste_stat, fest, state, reply_markup, schwinger_txt, is_baseline_run)
-
-    if schlussranglisten:
-        neueste_rl = max(schlussranglisten, key=lambda x: x["gang"])
-        verarbeite_dokument(neueste_rl, fest, state, reply_markup, schwinger_txt, is_baseline_run)
-
-def verarbeite_dokument(doc, fest, state, reply_markup, schwinger_txt, is_baseline_run):
-    filename = doc["url"].split("/")[-1].split("?")[0]
-    
-    if doc["key"] in state["known_pdfs"]:
+def verarbeite_dokument(pdf_url, storage_key, filename, href, link_text, gang, fest, state, reply_markup, schwinger_txt, is_baseline_run):
+    # Absoluter Doppelpost-Schutz: Wenn der Key bereits im state existiert, wird abgebrochen
+    if storage_key in state["known_pdfs"]:
         return
 
     try:
-        res = requests.get(doc["url"], headers=HEADERS, timeout=60)
+        res = requests.get(pdf_url, headers=HEADERS, timeout=60)
         res.raise_for_status()
         pdf_bytes = res.content
         pdf_hash = hashlib.md5(pdf_bytes).hexdigest()
 
-        state["known_pdfs"][doc["key"]] = pdf_hash
+        # In der Merkliste speichern
+        state["known_pdfs"][storage_key] = pdf_hash
 
-        # Wenn es der Initialisierungslauf ist, speichern wir den Zustand NUR lautlos ab!
+        # Wenn es der allererste Initialisierungslauf des Tages ist -> Nur lautlos speichern!
         if is_baseline_run:
             print(f"Baseline-Erfassung: {filename} lautlos registriert.")
             return
 
-        doc_title = get_pdf_title(doc["href"], doc["link_text"], doc["gang"])
+        doc_title = get_pdf_title(href, link_text, gang)
         emoji = "🏆" if "Schluss" in doc_title else "📊"
 
         caption = f"🏟 <b>{escape(fest['fest_name'])}</b>\n"
@@ -257,9 +248,7 @@ def main():
 
     heute_str = datetime.now().strftime("%d.%m.%Y")
     
-    # Der schlaue Datums-Check:
-    # Wenn im Speicher ein anderes Datum steht als das von heute, 
-    # MUSS der erste Lauf des Tages zwingend ein lautloser Baseline-Lauf sein!
+    # Wenn im Speicher ein anderes Datum steht als heute, machen wir den ersten Lauf lautlos
     is_baseline_run = (state.get("last_baseline_date", "") != heute_str)
 
     if is_baseline_run:
@@ -268,7 +257,6 @@ def main():
     for fest in fests:
         process_fest(fest, state, is_baseline_run)
 
-    # Wenn es der Initialisierungslauf war, fixieren wir das Datum im Speicher
     if is_baseline_run:
         state["last_baseline_date"] = heute_str
         print(f"Baseline für den {heute_str} erfolgreich fixiert. Ab dem nächsten Lauf wird live gesendet.")
