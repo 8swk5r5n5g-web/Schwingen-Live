@@ -6,13 +6,7 @@ import hashlib
 from io import BytesIO
 from html import escape
 from datetime import datetime
-from urllib.parse import urljoin
-
-# WICHTIG: Für den exakten Zeitzonen-Abgleich in der Schweiz
-try:
-    import zoneinfo
-except ImportError:
-    from backports import zoneinfo
+from urllib.parse import urlparse, parse_qs, urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -25,14 +19,15 @@ RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
 STATE_FILE = "state.json"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 Schwingen-Live-Bot/4.0",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
 }
 
 def load_state():
+    # Wenn manuell auf "Run workflow" geklickt wird -> Speicher ignorieren und ALLES von heute rausballern!
     if os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch":
-        print("Manueller Start: Ignoriere alten Speicher, um heutige Listen sofort zu senden!")
+        print("Manueller Start: Speicher wird ignoriert! Alle aktuellen PDFs werden jetzt gesendet.")
         return {"known_pdfs": {}, "baseline_done": True}
 
     if os.path.exists(STATE_FILE):
@@ -56,16 +51,31 @@ def save_state(state):
 def clean_text(text):
     return " ".join(text.replace("\xa0", " ").split()).strip()
 
-def get_soup(url):
+def normalise_url(url):
+    return urljoin(BASE_URL, url)
+
+def get_page(url):
     response = requests.get(url, headers=HEADERS, timeout=60)
     response.raise_for_status()
-    return BeautifulSoup(response.text, "html.parser")
+    return response.text
+
+def get_soup(url):
+    return BeautifulSoup(get_page(url), "html.parser")
 
 def extract_date(text):
     match = re.search(r"\d{2}\.\d{2}\.?\d{4}", text)
     if not match:
         return ""
     return match.group(0).replace("..", ".")
+
+def parse_date(date_text):
+    return datetime.strptime(date_text, "%d.%m.%Y")
+
+def get_anlass_id(url):
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    values = query.get("anlass", [])
+    return values[0] if values else ""
 
 def is_jung_or_nachwuchs(text):
     text = text.lower()
@@ -74,55 +84,75 @@ def is_jung_or_nachwuchs(text):
 
 def collect_active_fests():
     soup = get_soup(RANGLISTEN_URL)
+    grouped = {}
+
+    # ORIGINALER PARSER: Gruppiert stur alle Links, die zum selben Fest gehören
+    for link in soup.find_all("a", href=True):
+        href = normalise_url(link["href"])
+        if "anlass=" not in href:
+            continue
+
+        anlass_id = get_anlass_id(href)
+        text = clean_text(link.get_text(" ", strip=True))
+
+        if not anlass_id or not text:
+            continue
+
+        if anlass_id not in grouped:
+            grouped[anlass_id] = {"detail_url": href, "parts": []}
+        grouped[anlass_id]["parts"].append(text)
+
     entries = []
     
-    # Schweizer Uhrzeit erzwingen (Verhindert Server-Zeitverschiebungen bei GitHub)
-    tz_ch = zoneinfo.ZoneInfo("Europe/Zurich")
-    today_str = datetime.now(tz_ch).strftime("%d.%m.%Y")
-    print(f"Erzwungene Schweizer Server-Zeit für den Abgleich: {today_str}")
+    for data in grouped.values():
+        parts = data["parts"]
+        row_text = " ".join(parts).lower()
+        date_text = extract_date(" ".join(parts))
 
-    rows = soup.find_all("tr")
-    print(f"Scanne {len(rows)} Tabellenzeilen auf der ESV-Seite...")
-
-    for row in rows:
-        cells = row.find_all("td")
-        if len(cells) < 4:
+        if not date_text:
             continue
             
-        row_text = clean_text(row.get_text(" "))
-        date_text = extract_date(row_text)
-        
-        # 1. Schritt: Datum prüfen (MUSS exakt dem heutigen Schweizer Datum entsprechen)
-        if not date_text or date_text != today_str:
-            continue
-            
-        # 2. Schritt: Nachwuchsfeste blockieren
+        # Nachwuchs blockieren und 'Aktiv' voraussetzen
         if is_jung_or_nachwuchs(row_text):
             continue
-            
-        # 3. Schritt: Kategorie "Aktiv" voraussetzen
-        if "aktiv" not in row_text.lower():
+        if "aktiv" not in row_text:
             continue
 
-        link = row.find("a", href=True)
-        if not link:
-            continue
-            
-        detail_url = urljoin(BASE_URL, link["href"])
-        fest_name = clean_text(cells[1].get_text())
-        location = clean_text(cells[3].get_text()) if len(cells) > 3 else ""
+        # Sichere Festnamen-Erkennung (nimmt den längsten Textteil, der kein Datum/Kategorie ist)
+        fest_name = "Schwingfest"
+        for p in parts:
+            cleaned = clean_text(p)
+            if len(cleaned) > 5 and not extract_date(cleaned) and cleaned.lower() != "aktiv":
+                fest_name = cleaned
+                break
 
         entries.append({
-            "detail_url": detail_url,
+            "detail_url": data["detail_url"],
             "date_text": date_text,
             "fest_name": fest_name,
-            "location": location
+            "parsed_date": parse_date(date_text)
         })
 
-    print(f"Vergleich abgeschlossen. {len(entries)} Aktiv-Feste laufen HEUTE ({today_str}).")
-    for f in entries:
-        print(f"-> Fest wird geöffnet: {f['fest_name']}")
-    return entries
+    if not entries:
+        print("Keine Aktiv-Feste auf der ESV-Seite gefunden.")
+        return []
+
+    # UNFEHLBARE DATUMS-LOGIK: Wir suchen das absolut neueste Datum AUF DER SEITE.
+    # Egal ob 2024 oder 2026, der Bot nimmt automatisch die Feste vom aktuellsten Wochenende!
+    max_date = max(e["parsed_date"] for e in entries)
+    
+    current_weekend_fests = []
+    for e in entries:
+        # Alles was max 2 Tage vom neuesten Datum entfernt ist (fängt SA & SO ein)
+        if abs((e["parsed_date"] - max_date).days) <= 2:
+            current_weekend_fests.append(e)
+
+    print(f"Laufendes Wochenende erkannt: Rund um den {max_date.strftime('%d.%m.%Y')}")
+    print(f"Treffer! {len(current_weekend_fests)} Aktiv-Feste gefunden:")
+    for f in current_weekend_fests:
+        print(f"-> {f['fest_name']}")
+        
+    return current_weekend_fests
 
 def extract_number_after(label, text):
     match = re.search(rf"{re.escape(label)}\s+(\d+)", text, flags=re.IGNORECASE)
@@ -166,7 +196,7 @@ def process_fest(fest, state):
     schwinger = extract_number_after("Anzahl Schwinger", page_text)
     website = extract_fest_website(soup)
 
-    print(f"Scanne Dokumente für das laufende Fest: {fest['fest_name']}")
+    print(f"Prüfe Unterseite auf PDFs: {fest['fest_name']}")
 
     for link in soup.find_all("a", href=True):
         href = link["href"]
@@ -187,16 +217,19 @@ def process_fest(fest, state):
             old_entry = state["known_pdfs"].get(pdf_url)
             old_hash = old_entry.get("hash", "") if isinstance(old_entry, dict) else old_entry
 
+            # Wurde EXAKT dieser Hash (Dateiversion) schon mal gesendet? -> Ignorieren!
             if old_entry is not None and old_hash == pdf_hash:
                 continue
 
+            # Neuen Hash in den Speicher eintragen
             state["known_pdfs"][pdf_url] = {"hash": pdf_hash}
             save_state(state)
 
             if not state["baseline_done"]:
-                print(f"Baseline sichert bestehende Liste: {filename}")
+                print(f"Stille Sicherung (Baseline): {filename}")
                 continue
 
+            # Nachricht absenden (Das kompakte Design!)
             doc_emoji = "🏆 Schlussrangliste" if "schluss" in filename.lower() or "rl" in filename.lower() else "📊 Statistik"
             
             caption = f"🏟 <b>{escape(fest['fest_name'])}</b>\n"
@@ -210,8 +243,8 @@ def process_fest(fest, state):
             buttons.append({"text": "🔗 Direktlink ESV", "url": pdf_url})
             reply_markup = {"inline_keyboard": [buttons]}
 
+            print(f"Sende PDF an Telegram: {filename}")
             send_telegram_document(pdf_bytes, filename, caption, reply_markup)
-            print(f"Erfolgreich gepostet: {filename}")
             time.sleep(2)
 
         except Exception as exc:
@@ -230,10 +263,10 @@ def main():
         if not state["baseline_done"]:
             state["baseline_done"] = True
             save_state(state)
-            print("Baseline erfolgreich gesetzt.")
+            print("Baseline gesetzt.")
             
     except Exception as exc:
-        print(f"Fehler im Ablauf: {exc}")
+        print(f"Kritischer Fehler im Ablauf: {exc}")
     print("Botlauf beendet.")
 
 if __name__ == "__main__":
