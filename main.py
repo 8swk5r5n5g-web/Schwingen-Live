@@ -34,11 +34,8 @@ def load_state():
     else:
         state = {}
 
-    if "known_hashes" not in state or not isinstance(state["known_hashes"], list):
-        state["known_hashes"] = []
-
-    if "baseline_done" not in state:
-        state["baseline_done"] = False
+    if "sent_hashes" not in state or not isinstance(state["sent_hashes"], list):
+        state["sent_hashes"] = []
 
     return state
 
@@ -124,6 +121,7 @@ def collect_active_fests():
     if not entries:
         return []
 
+    # Wir filtern stur auf das aktuellste Datum (heute)
     newest_date = max(entries, key=lambda x: parse_date(x["date_text"]))["date_text"]
     return [e for e in entries if e["date_text"] == newest_date]
 
@@ -171,20 +169,18 @@ def process_fest(fest, state):
             pdf_bytes = res.content
             pdf_hash = get_file_hash(pdf_bytes)
             
-            if pdf_hash in state["known_hashes"]:
+            # EISERNE REGEL: Wenn dieser Inhalt noch NIE gesendet wurde, wird er JETZT gesendet!
+            if pdf_hash in state["sent_hashes"]:
                 continue
 
-            # Sofort den neuen Hash sichern
-            state["known_hashes"].append(pdf_hash)
+            # Sofort speichern, damit es nie doppelt kommt
+            state["sent_hashes"].append(pdf_hash)
             save_state(state)
 
-            # Wenn der allererste Lauf stattfindet, überspringen wir das Senden
-            if not state["baseline_done"]:
-                print(f"Baseline-Sicherung: {pdf_url}")
-                continue
-
+            # Dokumententyp bestimmen
             doc_type = "🏆 Schlussrangliste" if "schluss" in pdf_url.lower() or "rl" in pdf_url.lower() else "📊 Statistik"
             
+            # Post erstellen
             caption = f"🏟 <b>{escape(fest['fest_name'])}</b>\n"
             if schwinger:
                 caption += f"🤼 <b>{escape(schwinger)} Aktivschwinger</b>\n"
@@ -196,8 +192,10 @@ def process_fest(fest, state):
             buttons.append({"text": "🔗 Direktlink ESV", "url": pdf_url})
 
             filename = pdf_url.split("/")[-1].split("?")[0]
+            
+            # Direkt rausballern in den Kanal!
             send_telegram_document(pdf_bytes, filename, caption, {"inline_keyboard": [buttons]})
-            print(f"Gesendet: {filename}")
+            print(f"Erfolgreich gepostet: {filename}")
             
             time.sleep(2)
         except Exception as exc:
@@ -214,12 +212,7 @@ def main():
         for fest in fests:
             process_fest(fest, state)
             
-        # DIE FIXIERUNG: Unabhängig von Funden wird die Baseline nach dem Durchlauf gesetzt
-        if not state["baseline_done"]:
-            state["baseline_done"] = True
-            save_state(state)
-            print("Baseline für den Live-Kanal wurde jetzt erfolgreich fixiert!")
-            
+        print("Durchlauf beendet. Alle neuen Listen von heute wurden, falls vorhanden, gepostet.")
     except Exception as exc:
         print(f"Fehler im Ablauf: {exc}")
 
