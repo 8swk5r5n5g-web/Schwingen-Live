@@ -19,7 +19,7 @@ RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
 STATE_FILE = "state.json"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 Schwingen-Live-Bot/1.6",
+    "User-Agent": "Mozilla/5.0 Schwingen-Live-Bot/1.7",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
 }
@@ -106,15 +106,17 @@ def collect_active_fests():
         row_text = clean_text(" ".join(parts))
         date_text = extract_date(row_text)
         
+        # Ignoriere alles, was kein Datum hat oder eindeutig Nachwuchs ist
         if not date_text or is_jung_or_nachwuchs(row_text):
             continue
 
-        # Prüfen, ob es ein Aktivfest ist
-        if "aktiv" not in row_text.lower():
-            continue
-
-        # Den Festnamen ermitteln (ist meist das zweite Element, falls vorhanden)
-        fest_name = clean_text(parts[1]) if len(parts) > 1 else "Schwingfest"
+        # Den Festnamen holen (erstes oder zweites verfügbares Textelement)
+        fest_name = "Schwingfest"
+        for p in parts:
+            cleaned_p = clean_text(p)
+            if cleaned_p and not extract_date(cleaned_p) and len(cleaned_p) > 3:
+                fest_name = cleaned_p
+                break
 
         entries.append({
             "detail_url": data["detail_url"],
@@ -123,14 +125,14 @@ def collect_active_fests():
         })
 
     if not entries:
-        print("Keine Aktiv-Feste gefunden.")
+        print("Keine Feste gefunden.")
         return []
 
+    # Filter auf das neueste Datum (heute)
     newest_date = max(entries, key=lambda x: parse_date(x["date_text"]))["date_text"]
     newest_entries = [entry for entry in entries if entry["date_text"] == newest_date]
 
-    print(f"Alle Aktiv-Feste gefunden: {len(entries)}")
-    print(f"Neuestes Datum auf der Seite: {newest_date}")
+    print(f"Feste am aktuellen Wochenende gefunden: {len(newest_entries)}")
     return newest_entries
 
 def extract_number_after(label, text):
@@ -279,7 +281,7 @@ def check_ranglisten(state):
     if not state["baseline_done"]:
         state["baseline_done"] = True
         save_state(state)
-        print("Baseline fertig. Ab jetzt werden nur noch echte Inhalts-Updates gesendet.")
+        print("Baseline fertig.")
 
 def main():
     if not BOT_TOKEN or not CHAT_ID:
