@@ -8,6 +8,12 @@ from html import escape
 from datetime import datetime
 from urllib.parse import urljoin
 
+# WICHTIG: Für den exakten Zeitzonen-Abgleich in der Schweiz
+try:
+    import zoneinfo
+except ImportError:
+    from backports import zoneinfo
+
 import requests
 from bs4 import BeautifulSoup
 
@@ -19,14 +25,14 @@ RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
 STATE_FILE = "state.json"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
 }
 
 def load_state():
     if os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch":
-        print("Manueller Start: Ignoriere Speicher, um heutige Listen sofort zu senden.")
+        print("Manueller Start: Ignoriere alten Speicher, um heutige Listen sofort zu senden!")
         return {"known_pdfs": {}, "baseline_done": True}
 
     if os.path.exists(STATE_FILE):
@@ -70,7 +76,11 @@ def collect_active_fests():
     soup = get_soup(RANGLISTEN_URL)
     entries = []
     
-    # Wir loopen sauber durch jede Tabellenzeile der ESV-Rangliste
+    # Schweizer Uhrzeit erzwingen (Verhindert Server-Zeitverschiebungen bei GitHub)
+    tz_ch = zoneinfo.ZoneInfo("Europe/Zurich")
+    today_str = datetime.now(tz_ch).strftime("%d.%m.%Y")
+    print(f"Erzwungene Schweizer Server-Zeit für den Abgleich: {today_str}")
+
     rows = soup.find_all("tr")
     print(f"Scanne {len(rows)} Tabellenzeilen auf der ESV-Seite...")
 
@@ -82,10 +92,15 @@ def collect_active_fests():
         row_text = clean_text(row.get_text(" "))
         date_text = extract_date(row_text)
         
-        if not date_text or is_jung_or_nachwuchs(row_text):
+        # 1. Schritt: Datum prüfen (MUSS exakt dem heutigen Schweizer Datum entsprechen)
+        if not date_text or date_text != today_str:
             continue
             
-        # Suchen nach der Kategorie "Aktiv" in der Zeile
+        # 2. Schritt: Nachwuchsfeste blockieren
+        if is_jung_or_nachwuchs(row_text):
+            continue
+            
+        # 3. Schritt: Kategorie "Aktiv" voraussetzen
         if "aktiv" not in row_text.lower():
             continue
 
@@ -94,9 +109,6 @@ def collect_active_fests():
             continue
             
         detail_url = urljoin(BASE_URL, link["href"])
-        
-        # Texte aus den Spalten ziehen
-        date_str = clean_text(cells[0].get_text())
         fest_name = clean_text(cells[1].get_text())
         location = clean_text(cells[3].get_text()) if len(cells) > 3 else ""
 
@@ -107,19 +119,10 @@ def collect_active_fests():
             "location": location
         })
 
-    # Filter auf die aktuellsten Feste von heute (23.05.2026)
-    today_str = datetime.now().strftime("%d.%m.%Y")
-    today_entries = [e for e in entries if e["date_text"] == today_str]
-
-    # Falls für heute noch nichts gelistet ist, nimm die neuesten verfügbaren
-    if not today_entries and entries:
-        print("Keine Feste mit heutigem Datum gefunden, weiche auf aktuellste Datenbank-Einträge aus.")
-        return entries[:3]
-
-    print(f"Treffer! {len(today_entries)} Aktiv-Feste für heute gefunden.")
-    for f in today_entries:
-        print(f"-> Bereit: {f['fest_name']}")
-    return today_entries
+    print(f"Vergleich abgeschlossen. {len(entries)} Aktiv-Feste laufen HEUTE ({today_str}).")
+    for f in entries:
+        print(f"-> Fest wird geöffnet: {f['fest_name']}")
+    return entries
 
 def extract_number_after(label, text):
     match = re.search(rf"{re.escape(label)}\s+(\d+)", text, flags=re.IGNORECASE)
@@ -163,7 +166,7 @@ def process_fest(fest, state):
     schwinger = extract_number_after("Anzahl Schwinger", page_text)
     website = extract_fest_website(soup)
 
-    print(f"Scanne Dokumente für: {fest['fest_name']}")
+    print(f"Scanne Dokumente für das laufende Fest: {fest['fest_name']}")
 
     for link in soup.find_all("a", href=True):
         href = link["href"]
@@ -184,19 +187,16 @@ def process_fest(fest, state):
             old_entry = state["known_pdfs"].get(pdf_url)
             old_hash = old_entry.get("hash", "") if isinstance(old_entry, dict) else old_entry
 
-            # Wenn der Inhalt absolut identisch ist, überspringen
             if old_entry is not None and old_hash == pdf_hash:
                 continue
 
-            # Zustand sichern
             state["known_pdfs"][pdf_url] = {"hash": pdf_hash}
             save_state(state)
 
             if not state["baseline_done"]:
-                print(f"Baseline sichert: {filename}")
+                print(f"Baseline sichert bestehende Liste: {filename}")
                 continue
 
-            # Nachricht absenden
             doc_emoji = "🏆 Schlussrangliste" if "schluss" in filename.lower() or "rl" in filename.lower() else "📊 Statistik"
             
             caption = f"🏟 <b>{escape(fest['fest_name'])}</b>\n"
@@ -211,7 +211,7 @@ def process_fest(fest, state):
             reply_markup = {"inline_keyboard": [buttons]}
 
             send_telegram_document(pdf_bytes, filename, caption, reply_markup)
-            print(f"Erfolgreich in Kanal gepostet: {filename}")
+            print(f"Erfolgreich gepostet: {filename}")
             time.sleep(2)
 
         except Exception as exc:
