@@ -25,7 +25,6 @@ HEADERS = {
 }
 
 def get_file_hash(content):
-    """Generiert einen unfehlbaren digitalen Fingerabdruck des PDF-Inhalts."""
     return hashlib.md5(content).hexdigest()
 
 def load_state():
@@ -35,7 +34,6 @@ def load_state():
     else:
         state = {}
 
-    # Sicherstellen, dass die neuen, sicheren Hash-Strukturen existieren
     if "known_hashes" not in state or not isinstance(state["known_hashes"], list):
         state["known_hashes"] = []
 
@@ -148,11 +146,9 @@ def process_fest(fest, state):
     soup = get_soup(fest["detail_url"])
     page_text = clean_text(soup.get_text(" ", strip=True))
     
-    # Aktivschwinger auslesen
     match_schwinger = re.search(r"Anzahl Schwinger\s+(\d+)", page_text, flags=re.IGNORECASE)
     schwinger = match_schwinger.group(1) if match_schwinger else ""
     
-    # Fest-Webseite suchen
     website = ""
     for link in soup.find_all("a", href=True):
         href = link["href"].strip()
@@ -170,55 +166,46 @@ def process_fest(fest, state):
         pdf_url = urljoin(BASE_URL, href)
 
         try:
-            # Download des PDFs für die Inhaltsprüfung (Hash)
             res = requests.get(pdf_url, headers=HEADERS, timeout=60)
             res.raise_for_status()
             pdf_bytes = res.content
-            
-            # Einzigartigen Fingerabdruck der Datei berechnen
             pdf_hash = get_file_hash(pdf_bytes)
             
-            # DOPPELGÄNGER-SCHUTZ: Wurde exakt dieser Inhalt schon mal verarbeitet?
             if pdf_hash in state["known_hashes"]:
                 continue
 
-            # In die Historie eintragen und Zustand sofort speichern
+            # Sofort den neuen Hash sichern
             state["known_hashes"].append(pdf_hash)
             save_state(state)
 
-            # Wenn der Bot im ersten Lauf (Baseline) ist, sendet er nichts, um alte Altlasten zu ignorieren
+            # Wenn der allererste Lauf stattfindet, überspringen wir das Senden
             if not state["baseline_done"]:
-                print(f"Stille Sicherung (Baseline-Hash): {pdf_url}")
+                print(f"Baseline-Sicherung: {pdf_url}")
                 continue
 
-            # Dokumententyp bestimmen
             doc_type = "🏆 Schlussrangliste" if "schluss" in pdf_url.lower() or "rl" in pdf_url.lower() else "📊 Statistik"
             
-            # Minimalistischer Nachrichtenaufbau nach Wunsch
             caption = f"🏟 <b>{escape(fest['fest_name'])}</b>\n"
             if schwinger:
                 caption += f"🤼 <b>{escape(schwinger)} Aktivschwinger</b>\n"
             caption += f"📝 <b>{doc_type}</b>"
 
-            # Saubere Inline-Buttons für die Telegram-Nachricht
             buttons = []
             if website:
                 buttons.append({"text": "🌐 Fest-Webseite", "url": website})
             buttons.append({"text": "🔗 Direktlink ESV", "url": pdf_url})
 
             filename = pdf_url.split("/")[-1].split("?")[0]
-            
-            # PDF direkt mit der Nachricht mitsenden
             send_telegram_document(pdf_bytes, filename, caption, {"inline_keyboard": [buttons]})
-            print(f"Erfolgreich live gepostet: {filename}")
+            print(f"Gesendet: {filename}")
             
             time.sleep(2)
         except Exception as exc:
-            print(f"Fehler bei Verarbeitung von {pdf_url}: {exc}")
+            print(f"Fehler bei {pdf_url}: {exc}")
 
 def main():
     if not BOT_TOKEN or not CHAT_ID:
-        raise ValueError("BOT_TOKEN oder CHAT_ID fehlt in den GitHub Secrets.")
+        raise ValueError("BOT_TOKEN oder CHAT_ID fehlt.")
         
     state = load_state()
     
@@ -227,12 +214,14 @@ def main():
         for fest in fests:
             process_fest(fest, state)
             
+        # DIE FIXIERUNG: Unabhängig von Funden wird die Baseline nach dem Durchlauf gesetzt
         if not state["baseline_done"]:
             state["baseline_done"] = True
             save_state(state)
-            print("Baseline erfolgreich im Live-Betrieb gesetzt! Ab jetzt wird scharf geschaltet.")
+            print("Baseline für den Live-Kanal wurde jetzt erfolgreich fixiert!")
+            
     except Exception as exc:
-        print(f"Fehler beim Ranglisten-Lauf: {exc}")
+        print(f"Fehler im Ablauf: {exc}")
 
 if __name__ == "__main__":
     main()
