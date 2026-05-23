@@ -21,22 +21,32 @@
       "date": "23.05.2026"
     },
     "https://arls.esv.ch/documents/ranglisten/zs1/2026-05-23_66_Morgartenschwinget-ST.pdf": {
-      "hash": "382776194d616583d0cb652fa7b387a2dc9a3cbb69801c11bf7bd1e69c79efa8",
+      "hash": "ccccd6a69c88b2fc525da2c47d983e2a10ce61449dd3ca68c098fceb79399d6b",
       "fest": "66.Morgartenschwinget",
       "date": "23.05.2026"
     },
     "https://arls.esv.ch/documents/ranglisten/zs1/2026-05-23_Brugger_Schachen_Schwinget2-ST.pdf": {
-      "hash": "4a6e28c0b6d1762d3fe6ad5defd6ff3c672e8b312044496b6049c5fe8abe05bf",
+      "hash": "7d5f597ed673042e163186b87fb00086a0a3353c19189a65b95ed54b733d8472",
       "fest": "Brugger Schachen Schwinget",
       "date": "23.05.2026"
     },
     "https://arls.esv.ch/documents/ranglisten/zs2/2026-05-23_Brugger_Schachen_Schwinget2-ST.pdf": {
-      "hash": "7d59b7ca8d83e2897b51332fb1bb67e7d5e7ee29d98b9880e65e81e90ca8cacf",
+      "hash": "662c29b58805e341c9859fefccc2b7d1be8e549d33817ae39d45f40e47a7c519",
       "fest": "Brugger Schachen Schwinget",
       "date": "23.05.2026"
     },
     "https://arls.esv.ch/documents/ranglisten/zs3/2026-05-23_Brugger_Schachen_Schwinget2-ST.pdf": {
-      "hash": "c180a9fa7b515da3e5bfda72ea7e0a271cdb14be850e83e16d628d8cbb800abc",
+      "hash": "fd5453c1f7441dde708bdab6418721fce4f9c1ac318630505701b268dfa4a369",
+      "fest": "Brugger Schachen Schwinget",
+      "date": "23.05.2026"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs2/2026-05-23_66_Morgartenschwinget-ST.pdf": {
+      "hash": "5e2f3de554985895d20e2d3b47efe7202817d69584068ed2ad82dca00d1e2949",
+      "fest": "66.Morgartenschwinget",
+      "date": "23.05.2026"
+    },
+    "https://arls.esv.ch/documents/ranglisten/zs4/2026-05-23_Brugger_Schachen_Schwinget2-ST.pdf": {
+      "hash": "5103664a47b7d1c658589036f8ede7bb9121c50f61384246df0d1fffe5666623",
       "fest": "Brugger Schachen Schwinget",
       "date": "23.05.2026"
     }
