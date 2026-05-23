@@ -26,8 +26,6 @@ HEADERS = {
 }
 
 def load_state():
-    # Wenn du manuell auf "Run workflow" drückst, setzen wir die Baseline zurück,
-    # damit er die aktuellen Listen von heute JETZT SOFORT findet und rausballert!
     if os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch":
         print("MANUELLER START: Sende alle aktuellen PDFs sofort raus!")
         return {"known_pdfs": {}, "baseline_done": True}
@@ -197,6 +195,23 @@ def is_schlussrangliste(href, link_text=""):
 def should_track_pdf(href, link_text=""):
     return is_statistik(href, link_text) or is_schlussrangliste(href, link_text)
 
+def get_pdf_title(href, link_text=""):
+    text = clean_text(link_text)
+    filename = href.split("/")[-1].split("?")[0].lower()
+    
+    gang_match = re.search(r"(\d+)\.?\s*(gang|g\b)", text.lower() + " " + filename)
+    gang_suffix = f" (nach dem {gang_match.group(1)}. Gang)" if gang_match else ""
+
+    if is_schlussrangliste(href, text):
+        return "Schlussrangliste"
+        
+    if is_statistik(href, text):
+        if len(text) > 9 and "statistik" in text.lower():
+            return text
+        return f"Statistik{gang_suffix}"
+
+    return "PDF"
+
 def get_pdf_bytes(pdf_url, retries=3):
     for attempt in range(1, retries + 1):
         try:
@@ -222,23 +237,22 @@ def process_pdf(pdf_url, pdf_bytes, pdf_hash, href, link_text, fest, detail_info
     old_entry = state["known_pdfs"].get(pdf_url)
     filename = pdf_url.split("/")[-1].split("?")[0]
 
-    # Bestimme Dokumenten-Typ
-    doc_emoji = "🏆 Schlussrangliste" if is_schlussrangliste(href, link_text) else "📊 Statistik"
+    doc_title = get_pdf_title(href, link_text)
+    doc_emoji = "🏆 Schlussrangliste" if "Schlussrangliste" in doc_title else f"📊 {doc_title}"
     
-    # KLARES, KOMPAKTES LAYOUT:
     caption = f"🏟 <b>{escape(fest.get('fest_name', 'Schwingfest'))}</b>\n"
     schwinger = detail_infos.get("schwinger", "")
     if schwinger:
         caption += f"🤼 <b>{escape(schwinger)} Aktivschwinger</b>\n"
     caption += f"📝 <b>{doc_emoji}</b>"
 
+    # HIER: Direktlink entfernt, nur noch Fest-Webseite falls vorhanden
     buttons = []
     if detail_infos.get("website"):
         buttons.append({"text": "🌐 Fest-Webseite", "url": detail_infos.get("website")})
-    buttons.append({"text": "🔗 Direktlink ESV", "url": pdf_url})
-    reply_markup = {"inline_keyboard": [buttons]}
+    
+    reply_markup = {"inline_keyboard": [buttons]} if buttons else None
 
-    # FALL 1: Komplett neue URL
     if old_entry is None:
         state["known_pdfs"][pdf_url] = {
             "hash": pdf_hash,
@@ -255,7 +269,6 @@ def process_pdf(pdf_url, pdf_bytes, pdf_hash, href, link_text, fest, detail_info
         send_telegram_document(pdf_bytes, filename, caption, reply_markup)
         return
 
-    # FALL 2: Bekannte URL, aber Inhalts-Update nach einem Gang!
     old_hash = old_entry.get("hash", "") if isinstance(old_entry, dict) else old_entry
 
     if old_hash != pdf_hash:
