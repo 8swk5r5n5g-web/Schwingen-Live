@@ -1,7 +1,7 @@
 {
   "known_pdfs": {
     "https://arls.esv.ch/documents/ranglisten/zs1/2026-05-23_Oberaargauisches_Schwingfest-ST.pdf": {
-      "hash": "ae1a4a102b574c150141e3f555edc403af84988cf3d8c0f65728c553a158860e",
+      "hash": "ccd5d7abf3b222bba147d3ce785ae98da7697e7b49ed401f9274fc5d91aa223b",
       "fest": "Oberaargauisches Schwingfest",
       "date": "23.05.2026"
     },
@@ -21,12 +21,12 @@
       "date": "23.05.2026"
     },
     "https://arls.esv.ch/documents/ranglisten/zs1/2026-05-23_66_Morgartenschwinget-ST.pdf": {
-      "hash": "ccccd6a69c88b2fc525da2c47d983e2a10ce61449dd3ca68c098fceb79399d6b",
+      "hash": "a6845f06e14a967856ab68760e20142a5ac34a340fc2495097076a14a2b34935",
       "fest": "66.Morgartenschwinget",
       "date": "23.05.2026"
     },
     "https://arls.esv.ch/documents/ranglisten/zs1/2026-05-23_Brugger_Schachen_Schwinget2-ST.pdf": {
-      "hash": "7d5f597ed673042e163186b87fb00086a0a3353c19189a65b95ed54b733d8472",
+      "hash": "042bcf0ee30c30d3c62c6889278aeff1cd8a93f8caa54b1945570deecc904964",
       "fest": "Brugger Schachen Schwinget",
       "date": "23.05.2026"
     },
