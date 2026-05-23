@@ -25,7 +25,6 @@ HEADERS = {
 }
 
 def load_state():
-    # BOMBENSICHER: Kein Löschen mehr bei manuellem Start! Der Speicher bleibt IMMER erhalten.
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r", encoding="utf-8") as file:
             return json.load(file)
@@ -118,17 +117,15 @@ def collect_active_fests():
             "anlass_id": anlass_id,
             "detail_url": data["detail_url"],
             "fest_name": fest_name,
+            "date_text": date_text
         })
-
-    if not entries:
-        return []
 
     return entries[:MAX_DETAIL_PAGES]
 
 def get_gang_nummer(href, link_text):
     combined = f"{href} {link_text}".lower()
     if combined.strip() == "statistik" or "statistik.pdf" in href.lower():
-        return 99  # Höchste Priorität für das finale Dokument ohne Gangzahl
+        return 99  # Finale Statistik ohne Nummer erhält höchste Priorität
     gang_match = re.search(r"(\d+)\.?\s*(gang|g\b|gängen)", combined)
     if gang_match:
         return int(gang_match.group(1))
@@ -159,6 +156,10 @@ def process_fest(fest, state):
     except Exception:
         return
 
+    # Prüfen, ob das Fest HEUTE stattfindet
+    heute_str = datetime.now().strftime("%d.%m.%Y")
+    ist_fest_von_heute = (fest["date_text"] == heute_str)
+
     website = ""
     for link in soup.find_all("a", href=True):
         href = link["href"].strip()
@@ -180,36 +181,42 @@ def process_fest(fest, state):
         href = link["href"]
         link_text = clean_text(link.get_text(" ", strip=True))
 
+        if not href.lower().split("?")[0].endswith(".pdf"):
+            continue
+
+        if any(w in f"{href} {link_text}".lower() for w in ["zwischen", "startliste", "einteilung", "notizblatt"]):
+            continue
+
+        gang = get_gang_nummer(href, link_text)
+
+        # 🛑 DIE SICHERHEITS-WEICHE FÜR HEUTE ABEND:
+        # Wenn es ein Fest von HEUTE ist und es eine Gangnummer 1-6 hat, ignorieren wir es JETZT,
+        # damit der gestoppte Bot beim Neustart nicht wieder die alten Gänge von heute Nachmittag streamt.
+        if ist_fest_von_heute and (0 < gang <= 6):
+            continue
+
         is_stat = "statistik" in href.lower() or "statistik" in link_text.lower() or "-st.pdf" in href.lower()
         is_rl = "schluss" in href.lower() or "schluss" in link_text.lower() or "-rl.pdf" in href.lower()
         
-        if not href.lower().split("?")[0].endswith(".pdf") or not (is_stat or is_rl):
-            continue
-            
-        if any(w in f"{href} {link_text}".lower() for w in ["zwischen", "startliste", "einteilung", "notizblatt"]):
+        if not (is_stat or is_rl):
             continue
 
         pdf_url = normalise_url(href)
         filename = pdf_url.split("/")[-1].split("?")[0]
         storage_key = f"{fest['anlass_id']}_{filename}"
 
-        # DOPPELPOST-SCHUTZ: Wenn wir diese exakte Datei jemals gesendet haben, ignorieren wir sie komplett!
         if storage_key in state["known_pdfs"]:
             continue
-
-        gang = get_gang_nummer(href, link_text)
 
         if is_rl:
             schlussranglisten.append({"url": pdf_url, "href": href, "link_text": link_text, "gang": gang, "key": storage_key})
         elif is_stat:
             statistiken.append({"url": pdf_url, "href": href, "link_text": link_text, "gang": gang, "key": storage_key})
 
-    # Verarbeite die aktuellste Statistik (falls noch nicht gesendet)
     if statistiken:
         neueste_stat = max(statistiken, key=lambda x: x["gang"])
         verarbeite_dokument(neueste_stat, fest, state, reply_markup, schwinger_txt)
 
-    # Verarbeite die Schlussrangliste (falls noch nicht gesendet)
     if schlussranglisten:
         neueste_rl = max(schlussranglisten, key=lambda x: x["gang"])
         verarbeite_dokument(neueste_rl, fest, state, reply_markup, schwinger_txt)
@@ -222,7 +229,6 @@ def verarbeite_dokument(doc, fest, state, reply_markup, schwinger_txt):
         pdf_bytes = res.content
         pdf_hash = hashlib.md5(pdf_bytes).hexdigest()
 
-        # Zustand dauerhaft im Speicher ablegen
         state["known_pdfs"][doc["key"]] = pdf_hash
         save_state(state)
 
