@@ -28,7 +28,7 @@ def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r", encoding="utf-8") as file:
             return json.load(file)
-    return {"known_pdfs": {}}
+    return {"known_pdfs": {}, "last_baseline_date": ""}
 
 def save_state(state):
     with open(STATE_FILE, "w", encoding="utf-8") as file:
@@ -83,7 +83,6 @@ def collect_active_fests():
         print(f"Fehler Übersicht: {e}")
         return []
 
-    # Filtert stur NUR nach dem aktuellen Datum (Heute)
     heute_str = datetime.now().strftime("%d.%m.%Y")
     print(f"Filtere Fests für das Datum: {heute_str}")
 
@@ -113,7 +112,6 @@ def collect_active_fests():
         category = clean_text(parts[2]).lower()
         row_text = clean_text(" ".join(parts))
 
-        # Sicherheitsfilter: NUR Feste vom exakt aktuellen Tag verarbeiten
         if date_text != heute_str:
             continue
 
@@ -156,7 +154,7 @@ def send_telegram_document(pdf_bytes, filename, caption, reply_markup=None):
     files = {"document": (filename, BytesIO(pdf_bytes), "application/pdf")}
     requests.post(url, data=data, files=files, timeout=90).raise_for_status()
 
-def process_fest(fest, state):
+def process_fest(fest, state, is_baseline_run):
     try:
         soup = get_soup(fest["detail_url"])
     except Exception:
@@ -211,13 +209,13 @@ def process_fest(fest, state):
 
     if statistiken:
         neueste_stat = max(statistiken, key=lambda x: x["gang"])
-        verarbeite_dokument(neueste_stat, fest, state, reply_markup, schwinger_txt)
+        verarbeite_dokument(neueste_stat, fest, state, reply_markup, schwinger_txt, is_baseline_run)
 
     if schlussranglisten:
         neueste_rl = max(schlussranglisten, key=lambda x: x["gang"])
-        verarbeite_dokument(neueste_rl, fest, state, reply_markup, schwinger_txt)
+        verarbeite_dokument(neueste_rl, fest, state, reply_markup, schwinger_txt, is_baseline_run)
 
-def verarbeite_dokument(doc, fest, state, reply_markup, schwinger_txt):
+def verarbeite_dokument(doc, fest, state, reply_markup, schwinger_txt, is_baseline_run):
     filename = doc["url"].split("/")[-1].split("?")[0]
     
     if doc["key"] in state["known_pdfs"]:
@@ -230,11 +228,10 @@ def verarbeite_dokument(doc, fest, state, reply_markup, schwinger_txt):
         pdf_hash = hashlib.md5(pdf_bytes).hexdigest()
 
         state["known_pdfs"][doc["key"]] = pdf_hash
-        save_state(state)
 
-        # LAUTLOSE INITIALISIERUNG BEIM ERSTEN START DES TAGES
-        if not state.get("baseline_fixed", False):
-            print(f"Baseline-Erfassung: {filename} lautlos im Speicher hinterlegt.")
+        # Wenn es der Initialisierungslauf ist, speichern wir den Zustand NUR lautlos ab!
+        if is_baseline_run:
+            print(f"Baseline-Erfassung: {filename} lautlos registriert.")
             return
 
         doc_title = get_pdf_title(doc["href"], doc["link_text"], doc["gang"])
@@ -258,20 +255,25 @@ def main():
     state = load_state()
     fests = collect_active_fests()
 
-    # Wenn für den aktuellen Tag noch keine Baseline existiert, erfassen wir sie jetzt lautlos
-    if not state.get("baseline_fixed", False) and fests:
-        print("Erster Lauf des Tages: Erfasse Zustand aller Feste lautlos...")
-        for fest in fests:
-            process_fest(fest, state)
-        state["baseline_fixed"] = True
-        save_state(state)
-        print("Baseline fixiert. Ab dem nächsten Durchlauf wird live gesendet.")
-        return
+    heute_str = datetime.now().strftime("%d.%m.%Y")
+    
+    # Der schlaue Datums-Check:
+    # Wenn im Speicher ein anderes Datum steht als das von heute, 
+    # MUSS der erste Lauf des Tages zwingend ein lautloser Baseline-Lauf sein!
+    is_baseline_run = (state.get("last_baseline_date", "") != heute_str)
 
-    # Regulärer Ticker-Durchlauf
+    if is_baseline_run:
+        print(f"Erster Lauf am {heute_str}: Starte lautlose Baseline-Initialisierung...")
+    
     for fest in fests:
-        process_fest(fest, state)
+        process_fest(fest, state, is_baseline_run)
 
+    # Wenn es der Initialisierungslauf war, fixieren wir das Datum im Speicher
+    if is_baseline_run:
+        state["last_baseline_date"] = heute_str
+        print(f"Baseline für den {heute_str} erfolgreich fixiert. Ab dem nächsten Lauf wird live gesendet.")
+    
+    save_state(state)
     print("Bot-Scan erfolgreich beendet.")
 
 if __name__ == "__main__":
