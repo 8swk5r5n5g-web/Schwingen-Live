@@ -27,7 +27,7 @@ HEADERS = {
 
 def load_state():
     if os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch":
-        print("MANUELLER START: Sende alle aktuellen PDFs sofort raus!")
+        print("MANUELLER START: Sende die aktuellsten PDFs sofort raus!")
         return {"known_pdfs": {}, "baseline_done": True}
 
     if os.path.exists(STATE_FILE):
@@ -52,12 +52,10 @@ def get_page(url, retries=3):
     for attempt in range(1, retries + 1):
         try:
             response = requests.get(url, headers=HEADERS, timeout=60)
-            print(f"GET: {url} -> {response.status_code}")
             response.raise_for_status()
             return response.text
         except requests.exceptions.RequestException as exc:
             wait_time = attempt * 5
-            print(f"Fehler bei {url} (Versuch {attempt}): {exc}. Warte {wait_time}s...")
             time.sleep(wait_time)
     raise RuntimeError(f"Seite konnte nicht geladen werden: {url}")
 
@@ -146,9 +144,6 @@ def collect_active_fests():
 
     newest_date = max(entries, key=lambda entry: parse_date(entry["date_text"]))["date_text"]
     filtered = [entry for entry in entries if entry["date_text"] == newest_date]
-
-    print(f"Alle Aktiv-Feste gefunden: {len(entries)}")
-    print(f"Neuestes Datum auf der Seite: {newest_date}")
     return filtered[:MAX_DETAIL_PAGES]
 
 def extract_number_after(label, text):
@@ -192,24 +187,21 @@ def is_schlussrangliste(href, link_text=""):
         return False
     return "schlussrangliste" in combined or "schlussrang" in combined or combined.endswith("-rl.pdf") or "_rl.pdf" in combined
 
-def should_track_pdf(href, link_text=""):
-    return is_statistik(href, link_text) or is_schlussrangliste(href, link_text)
+def get_gang_nummer(href, link_text):
+    combined = f"{href} {link_text}".lower()
+    gang_match = re.search(r"(\d+)\.?\s*(gang|g\b)", combined)
+    return int(gang_match.group(1)) if gang_match else 0
 
-def get_pdf_title(href, link_text=""):
+def get_pdf_title(href, link_text, gang_num):
     text = clean_text(link_text)
-    filename = href.split("/")[-1].split("?")[0].lower()
-    
-    gang_match = re.search(r"(\d+)\.?\s*(gang|g\b)", text.lower() + " " + filename)
-    gang_suffix = f" (nach dem {gang_match.group(1)}. Gang)" if gang_match else ""
-
     if is_schlussrangliste(href, text):
         return "Schlussrangliste"
-        
     if is_statistik(href, text):
         if len(text) > 9 and "statistik" in text.lower():
             return text
-        return f"Statistik{gang_suffix}"
-
+        if gang_num > 0:
+            return f"Statistik (nach dem {gang_num}. Gang)"
+        return "Statistik"
     return "PDF"
 
 def get_pdf_bytes(pdf_url, retries=3):
@@ -218,10 +210,8 @@ def get_pdf_bytes(pdf_url, retries=3):
             response = requests.get(pdf_url, headers=HEADERS, timeout=90)
             response.raise_for_status()
             return response.content
-        except requests.exceptions.RequestException as exc:
-            wait_time = attempt * 5
-            print(f"Fehler bei PDF-Download {pdf_url} (Versuch {attempt}): {exc}")
-            time.sleep(wait_time)
+        except Exception:
+            time.sleep(5)
     raise RuntimeError(f"PDF konnte nicht geladen werden: {pdf_url}")
 
 def send_telegram_document(pdf_bytes, filename, caption, reply_markup=None):
@@ -230,14 +220,13 @@ def send_telegram_document(pdf_bytes, filename, caption, reply_markup=None):
     if reply_markup:
         data["reply_markup"] = json.dumps(reply_markup)
     files = {"document": (filename, BytesIO(pdf_bytes), "application/pdf")}
-    res = requests.post(url, data=data, files=files, timeout=90)
-    res.raise_for_status()
+    requests.post(url, data=data, files=files, timeout=90).raise_for_status()
 
-def process_pdf(pdf_url, pdf_bytes, pdf_hash, href, link_text, fest, detail_infos, state):
+def process_pdf(pdf_url, pdf_bytes, pdf_hash, href, link_text, gang_num, fest, detail_infos, state):
     old_entry = state["known_pdfs"].get(pdf_url)
     filename = pdf_url.split("/")[-1].split("?")[0]
 
-    doc_title = get_pdf_title(href, link_text)
+    doc_title = get_pdf_title(href, link_text, gang_num)
     doc_emoji = "🏆 Schlussrangliste" if "Schlussrangliste" in doc_title else f"📊 {doc_title}"
     
     caption = f"🏟 <b>{escape(fest.get('fest_name', 'Schwingfest'))}</b>\n"
@@ -246,73 +235,79 @@ def process_pdf(pdf_url, pdf_bytes, pdf_hash, href, link_text, fest, detail_info
         caption += f"🤼 <b>{escape(schwinger)} Aktivschwinger</b>\n"
     caption += f"📝 <b>{doc_emoji}</b>"
 
-    # HIER: Direktlink entfernt, nur noch Fest-Webseite falls vorhanden
     buttons = []
     if detail_infos.get("website"):
         buttons.append({"text": "🌐 Fest-Webseite", "url": detail_infos.get("website")})
-    
     reply_markup = {"inline_keyboard": [buttons]} if buttons else None
 
     if old_entry is None:
-        state["known_pdfs"][pdf_url] = {
-            "hash": pdf_hash,
-            "fest": fest.get("fest_name", ""),
-            "date": fest.get("date_text", ""),
-        }
+        state["known_pdfs"][pdf_url] = {"hash": pdf_hash, "fest": fest.get("fest_name", ""), "date": fest.get("date_text", "")}
         save_state(state)
-
         if not state["baseline_done"]:
-            print(f"Baseline sichert: {filename}")
             return
-
         print(f"Sende neue PDF: {filename}")
         send_telegram_document(pdf_bytes, filename, caption, reply_markup)
         return
 
     old_hash = old_entry.get("hash", "") if isinstance(old_entry, dict) else old_entry
-
     if old_hash != pdf_hash:
         if isinstance(old_entry, dict):
             state["known_pdfs"][pdf_url]["hash"] = pdf_hash
         else:
             state["known_pdfs"][pdf_url] = {"hash": pdf_hash}
-        
         save_state(state)
-
         if not state["baseline_done"]:
             return
-
-        print(f"Sende Aktualisierung nach Gang für: {filename}")
+        print(f"Sende Aktualisierung für: {filename}")
         send_telegram_document(pdf_bytes, filename, caption, reply_markup)
         return
-
-    print(f"Unverändert: {filename}")
 
 def process_fest(fest, state):
     soup = get_soup(fest["detail_url"])
     detail_infos = extract_detail_infos(soup)
 
     print(f"Scanne: {fest['fest_name']}")
+    
+    statistiken = []
+    schlussrangliste = None
 
+    # Schritt 1: Alle PDFs auf der Seite finden und kategorisieren
     for link in soup.find_all("a", href=True):
         href = link["href"]
         link_text = clean_text(link.get_text(" ", strip=True))
 
-        if not should_track_pdf(href, link_text):
+        if not is_real_pdf_url(href) or is_blocked_pdf(href, link_text):
             continue
 
         pdf_url = normalise_url(href)
 
-        try:
-            pdf_bytes = get_pdf_bytes(pdf_url)
-            pdf_hash = hashlib.sha256(pdf_bytes).hexdigest()
-            
-            process_pdf(pdf_url, pdf_bytes, pdf_hash, href, link_text, fest, detail_infos, state)
-        except Exception as exc:
-            print(f"Fehler bei PDF {pdf_url}: {exc}")
-            continue
+        if is_schlussrangliste(href, link_text):
+            schlussrangliste = (pdf_url, href, link_text)
+        elif is_statistik(href, link_text):
+            gang = get_gang_nummer(href, link_text)
+            statistiken.append({"url": pdf_url, "href": href, "link_text": link_text, "gang": gang})
 
-        time.sleep(1)
+    # Schritt 2: RADIKALER FILTER - Nur die ALLERNEUESTE Statistik zulassen!
+    if statistiken:
+        # Sortiert nach der Gangnummer (höchste zuerst). Falls keine Nummer erkannt wurde, gilt 0.
+        neueste_statistik = max(statistiken, key=lambda x: x["gang"])
+        print(f"-> Filter aktiv: Nutze nur neueste Statistik (Gang {neueste_statistik['gang']})")
+        
+        try:
+            pdf_bytes = get_pdf_bytes(neueste_statistik["url"])
+            pdf_hash = hashlib.sha256(pdf_bytes).hexdigest()
+            process_pdf(neueste_statistik["url"], pdf_bytes, pdf_hash, neueste_statistik["href"], neueste_statistik["link_text"], neueste_statistik["gang"], fest, detail_infos, state)
+        except Exception as exc:
+            print(f"Fehler bei Statistik: {exc}")
+
+    # Schritt 3: Schlussrangliste verarbeiten (falls vorhanden)
+    if schlussrangliste:
+        try:
+            pdf_bytes = get_page_bytes = get_pdf_bytes(schlussrangliste[0])
+            pdf_hash = hashlib.sha256(pdf_bytes).hexdigest()
+            process_pdf(schlussrangliste[0], pdf_bytes, pdf_hash, schlussrangliste[1], schlussrangliste[2], 0, fest, detail_infos, state)
+        except Exception as exc:
+            print(f"Fehler bei Schlussrangliste: {exc}")
 
 def main():
     if not BOT_TOKEN or not CHAT_ID:
