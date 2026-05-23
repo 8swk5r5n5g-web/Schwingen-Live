@@ -28,7 +28,7 @@ HEADERS = {
 def load_state():
     if os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch":
         print("MANUELLER START: Sende die aktuellsten PDFs sofort raus!")
-        return {"known_pdfs": {}, "baseline_done": True}
+        return {"known_pdfs": {}, "fests": {}, "baseline_done": True}
 
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r", encoding="utf-8") as file:
@@ -38,7 +38,8 @@ def load_state():
 
     if "known_pdfs" not in state:
         state["known_pdfs"] = {}
-
+    if "fests" not in state:
+        state["fests"] = {}
     if "baseline_done" not in state:
         state["baseline_done"] = False
 
@@ -116,7 +117,7 @@ def collect_active_fests():
         grouped[anlass_id]["parts"].append(text)
 
     entries = []
-    for data in grouped.values():
+    for anlass_id, data in grouped.items():
         parts = data["parts"]
         if len(parts) < 5:
             continue
@@ -131,6 +132,7 @@ def collect_active_fests():
             continue
 
         entries.append({
+            "anlass_id": anlass_id,
             "detail_url": data["detail_url"],
             "overview_text": row_text,
             "date_text": date_text,
@@ -222,56 +224,20 @@ def send_telegram_document(pdf_bytes, filename, caption, reply_markup=None):
     files = {"document": (filename, BytesIO(pdf_bytes), "application/pdf")}
     requests.post(url, data=data, files=files, timeout=90).raise_for_status()
 
-def process_pdf(pdf_url, pdf_bytes, pdf_hash, href, link_text, gang_num, fest, detail_infos, state):
-    old_entry = state["known_pdfs"].get(pdf_url)
-    filename = pdf_url.split("/")[-1].split("?")[0]
-
-    doc_title = get_pdf_title(href, link_text, gang_num)
-    doc_emoji = "🏆 Schlussrangliste" if "Schlussrangliste" in doc_title else f"📊 {doc_title}"
-    
-    caption = f"🏟 <b>{escape(fest.get('fest_name', 'Schwingfest'))}</b>\n"
-    schwinger = detail_infos.get("schwinger", "")
-    if schwinger:
-        caption += f"🤼 <b>{escape(schwinger)} Aktivschwinger</b>\n"
-    caption += f"📝 <b>{doc_emoji}</b>"
-
-    buttons = []
-    if detail_infos.get("website"):
-        buttons.append({"text": "🌐 Fest-Webseite", "url": detail_infos.get("website")})
-    reply_markup = {"inline_keyboard": [buttons]} if buttons else None
-
-    if old_entry is None:
-        state["known_pdfs"][pdf_url] = {"hash": pdf_hash, "fest": fest.get("fest_name", ""), "date": fest.get("date_text", "")}
-        save_state(state)
-        if not state["baseline_done"]:
-            return
-        print(f"Sende neue PDF: {filename}")
-        send_telegram_document(pdf_bytes, filename, caption, reply_markup)
-        return
-
-    old_hash = old_entry.get("hash", "") if isinstance(old_entry, dict) else old_entry
-    if old_hash != pdf_hash:
-        if isinstance(old_entry, dict):
-            state["known_pdfs"][pdf_url]["hash"] = pdf_hash
-        else:
-            state["known_pdfs"][pdf_url] = {"hash": pdf_hash}
-        save_state(state)
-        if not state["baseline_done"]:
-            return
-        print(f"Sende Aktualisierung für: {filename}")
-        send_telegram_document(pdf_bytes, filename, caption, reply_markup)
-        return
-
 def process_fest(fest, state):
+    anlass_id = fest["anlass_id"]
     soup = get_soup(fest["detail_url"])
     detail_infos = extract_detail_infos(soup)
 
-    print(f"Scanne: {fest['fest_name']}")
+    print(f"Scanne: {fest['fest_name']} (ID: {anlass_id})")
     
+    # Fest-Speicher initialisieren, falls neu
+    if anlass_id not in state["fests"]:
+        state["fests"][anlass_id] = {"last_gang": 0, "has_schlussrangliste": False}
+
     statistiken = []
     schlussrangliste = None
 
-    # Schritt 1: Alle PDFs auf der Seite finden und kategorisieren
     for link in soup.find_all("a", href=True):
         href = link["href"]
         link_text = clean_text(link.get_text(" ", strip=True))
@@ -282,30 +248,65 @@ def process_fest(fest, state):
         pdf_url = normalise_url(href)
 
         if is_schlussrangliste(href, link_text):
-            schlussrangliste = (pdf_url, href, link_text)
+            schlussrangliste = {"url": pdf_url, "href": href, "link_text": link_text}
         elif is_statistik(href, link_text):
             gang = get_gang_nummer(href, link_text)
             statistiken.append({"url": pdf_url, "href": href, "link_text": link_text, "gang": gang})
 
-    # Schritt 2: RADIKALER FILTER - Nur die ALLERNEUESTE Statistik zulassen!
-    if statistiken:
-        # Sortiert nach der Gangnummer (höchste zuerst). Falls keine Nummer erkannt wurde, gilt 0.
-        neueste_statistik = max(statistiken, key=lambda x: x["gang"])
-        print(f"-> Filter aktiv: Nutze nur neueste Statistik (Gang {neueste_statistik['gang']})")
-        
-        try:
-            pdf_bytes = get_pdf_bytes(neueste_statistik["url"])
-            pdf_hash = hashlib.sha256(pdf_bytes).hexdigest()
-            process_pdf(neueste_statistik["url"], pdf_bytes, pdf_hash, neueste_statistik["href"], neueste_statistik["link_text"], neueste_statistik["gang"], fest, detail_infos, state)
-        except Exception as exc:
-            print(f"Fehler bei Statistik: {exc}")
+    # BUTTONS BAUEN
+    buttons = []
+    if detail_infos.get("website"):
+        buttons.append({"text": "🌐 Fest-Webseite", "url": detail_infos.get("website")})
+    reply_markup = {"inline_keyboard": [buttons]} if buttons else None
 
-    # Schritt 3: Schlussrangliste verarbeiten (falls vorhanden)
-    if schlussrangliste:
+    # 1. VERARBEITUNG DER STATISTIK
+    if statistiken:
+        neueste_statistik = max(statistiken, key=lambda x: x["gang"])
+        aktuelle_gang_num = neueste_statistik["gang"]
+        letzte_gesendete_gang_num = state["fests"][anlass_id]["last_gang"]
+
+        print(f"-> Gefundener Gang auf ESV: {aktuelle_gang_num} | Zuletzt gesendet: {letzte_gesendete_gang_num}")
+
+        # Nur senden, wenn die Gangnummer ECHT HÖHER ist als die zuvor gesendete!
+        if aktuelle_gang_num > letzte_gesendete_gang_num:
+            try:
+                pdf_bytes = get_pdf_bytes(neueste_statistik["url"])
+                filename = neueste_statistik["url"].split("/")[-1].split("?")[0]
+                doc_title = get_pdf_title(neueste_statistik["href"], neueste_statistik["link_text"], aktuelle_gang_num)
+                
+                caption = f"🏟 <b>{escape(fest['fest_name'])}</b>\n"
+                if detail_infos.get("schwinger"):
+                    caption += f"🤼 <b>{escape(detail_infos['schwinger'])} Aktivschwinger</b>\n"
+                caption += f"📝 <b>📊 {doc_title}</b>"
+
+                state["fests"][anlass_id]["last_gang"] = aktuelle_gang_num
+                save_state(state)
+
+                if state["baseline_done"]:
+                    print(f"Sende neue Statistik (Gang {aktuelle_gang_num}) für {fest['fest_name']}")
+                    send_telegram_document(pdf_bytes, filename, caption, reply_markup)
+            except Exception as exc:
+                print(f"Fehler bei Statistik-Verarbeitung: {exc}")
+        else:
+            print(f"-> Überspringe Statistik. Keine neuere Gangnummer (aktuell: {aktuelle_gang_num} <= gesendet: {letzte_gesendete_gang_num})")
+
+    # 2. VERARBEITUNG DER SCHLUSSRANGLISTE
+    if schlussrangliste and not state["fests"][anlass_id]["has_schlussrangliste"]:
         try:
-            pdf_bytes = get_page_bytes = get_pdf_bytes(schlussrangliste[0])
-            pdf_hash = hashlib.sha256(pdf_bytes).hexdigest()
-            process_pdf(schlussrangliste[0], pdf_bytes, pdf_hash, schlussrangliste[1], schlussrangliste[2], 0, fest, detail_infos, state)
+            pdf_bytes = get_pdf_bytes(schlussrangliste["url"])
+            filename = schlussrangliste["url"].split("/")[-1].split("?")[0]
+            
+            caption = f"🏟 <b>{escape(fest['fest_name'])}</b>\n"
+            if detail_infos.get("schwinger"):
+                caption += f"🤼 <b>{escape(detail_infos['schwinger'])} Aktivschwinger</b>\n"
+            caption += f"📝 <b>🏆 Schlussrangliste</b>"
+
+            state["fests"][anlass_id]["has_schlussrangliste"] = True
+            save_state(state)
+
+            if state["baseline_done"]:
+                print(f"Sende Schlussrangliste für {fest['fest_name']}")
+                send_telegram_document(pdf_bytes, filename, caption, reply_markup)
         except Exception as exc:
             print(f"Fehler bei Schlussrangliste: {exc}")
 
