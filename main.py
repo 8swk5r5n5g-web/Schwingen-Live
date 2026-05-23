@@ -83,6 +83,10 @@ def collect_active_fests():
         print(f"Fehler Übersicht: {e}")
         return []
 
+    # Filtert stur NUR nach dem aktuellen Datum (Heute)
+    heute_str = datetime.now().strftime("%d.%m.%Y")
+    print(f"Filtere Fests für das Datum: {heute_str}")
+
     grouped = {}
     for link in soup.find_all("a", href=True):
         href = link["href"]
@@ -107,17 +111,19 @@ def collect_active_fests():
         date_text = extract_date_from_text(parts[0])
         fest_name = clean_text(parts[1])
         category = clean_text(parts[2]).lower()
-        location = clean_text(parts[3])
         row_text = clean_text(" ".join(parts))
 
-        if not date_text or category != "aktiv" or is_jung_or_nachwuchs(row_text):
+        # Sicherheitsfilter: NUR Feste vom exakt aktuellen Tag verarbeiten
+        if date_text != heute_str:
+            continue
+
+        if category != "aktiv" or is_jung_or_nachwuchs(row_text):
             continue
 
         entries.append({
             "anlass_id": anlass_id,
             "detail_url": data["detail_url"],
             "fest_name": fest_name,
-            "date_text": date_text
         })
 
     return entries[:MAX_DETAIL_PAGES]
@@ -125,7 +131,7 @@ def collect_active_fests():
 def get_gang_nummer(href, link_text):
     combined = f"{href} {link_text}".lower()
     if combined.strip() == "statistik" or "statistik.pdf" in href.lower():
-        return 99  # Finale Statistik ohne Nummer erhält höchste Priorität
+        return 99
     gang_match = re.search(r"(\d+)\.?\s*(gang|g\b|gängen)", combined)
     if gang_match:
         return int(gang_match.group(1))
@@ -156,10 +162,6 @@ def process_fest(fest, state):
     except Exception:
         return
 
-    # Prüfen, ob das Fest HEUTE stattfindet
-    heute_str = datetime.now().strftime("%d.%m.%Y")
-    ist_fest_von_heute = (fest["date_text"] == heute_str)
-
     website = ""
     for link in soup.find_all("a", href=True):
         href = link["href"].strip()
@@ -187,14 +189,6 @@ def process_fest(fest, state):
         if any(w in f"{href} {link_text}".lower() for w in ["zwischen", "startliste", "einteilung", "notizblatt"]):
             continue
 
-        gang = get_gang_nummer(href, link_text)
-
-        # 🛑 DIE SICHERHEITS-WEICHE FÜR HEUTE ABEND:
-        # Wenn es ein Fest von HEUTE ist und es eine Gangnummer 1-6 hat, ignorieren wir es JETZT,
-        # damit der gestoppte Bot beim Neustart nicht wieder die alten Gänge von heute Nachmittag streamt.
-        if ist_fest_von_heute and (0 < gang <= 6):
-            continue
-
         is_stat = "statistik" in href.lower() or "statistik" in link_text.lower() or "-st.pdf" in href.lower()
         is_rl = "schluss" in href.lower() or "schluss" in link_text.lower() or "-rl.pdf" in href.lower()
         
@@ -207,6 +201,8 @@ def process_fest(fest, state):
 
         if storage_key in state["known_pdfs"]:
             continue
+
+        gang = get_gang_nummer(href, link_text)
 
         if is_rl:
             schlussranglisten.append({"url": pdf_url, "href": href, "link_text": link_text, "gang": gang, "key": storage_key})
@@ -223,6 +219,10 @@ def process_fest(fest, state):
 
 def verarbeite_dokument(doc, fest, state, reply_markup, schwinger_txt):
     filename = doc["url"].split("/")[-1].split("?")[0]
+    
+    if doc["key"] in state["known_pdfs"]:
+        return
+
     try:
         res = requests.get(doc["url"], headers=HEADERS, timeout=60)
         res.raise_for_status()
@@ -232,6 +232,11 @@ def verarbeite_dokument(doc, fest, state, reply_markup, schwinger_txt):
         state["known_pdfs"][doc["key"]] = pdf_hash
         save_state(state)
 
+        # LAUTLOSE INITIALISIERUNG BEIM ERSTEN START DES TAGES
+        if not state.get("baseline_fixed", False):
+            print(f"Baseline-Erfassung: {filename} lautlos im Speicher hinterlegt.")
+            return
+
         doc_title = get_pdf_title(doc["href"], doc["link_text"], doc["gang"])
         emoji = "🏆" if "Schluss" in doc_title else "📊"
 
@@ -240,7 +245,7 @@ def verarbeite_dokument(doc, fest, state, reply_markup, schwinger_txt):
             caption += f"🤼 <b>{escape(schwinger_txt)} Aktivschwinger</b>\n"
         caption += f"📝 <b>{emoji} {doc_title}</b>"
 
-        print(f"SENDE LISTE: {filename}")
+        print(f"SENDE LIVE-UPDATE: {filename}")
         send_telegram_document(pdf_bytes, filename, caption, reply_markup)
 
     except Exception as e:
@@ -253,6 +258,17 @@ def main():
     state = load_state()
     fests = collect_active_fests()
 
+    # Wenn für den aktuellen Tag noch keine Baseline existiert, erfassen wir sie jetzt lautlos
+    if not state.get("baseline_fixed", False) and fests:
+        print("Erster Lauf des Tages: Erfasse Zustand aller Feste lautlos...")
+        for fest in fests:
+            process_fest(fest, state)
+        state["baseline_fixed"] = True
+        save_state(state)
+        print("Baseline fixiert. Ab dem nächsten Durchlauf wird live gesendet.")
+        return
+
+    # Regulärer Ticker-Durchlauf
     for fest in fests:
         process_fest(fest, state)
 
