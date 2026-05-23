@@ -121,7 +121,6 @@ def collect_active_fests():
     if not entries:
         return []
 
-    # Wir filtern stur auf das aktuellste Datum (heute)
     newest_date = max(entries, key=lambda x: parse_date(x["date_text"]))["date_text"]
     return [e for e in entries if e["date_text"] == newest_date]
 
@@ -140,7 +139,7 @@ def should_track_pdf(href, title):
         "-rl.pdf" in combined or "_rl.pdf" in combined
     )
 
-def process_fest(fest, state):
+def process_fest(fest, state, force_send=False):
     soup = get_soup(fest["detail_url"])
     page_text = clean_text(soup.get_text(" ", strip=True))
     
@@ -169,18 +168,17 @@ def process_fest(fest, state):
             pdf_bytes = res.content
             pdf_hash = get_file_hash(pdf_bytes)
             
-            # EISERNE REGEL: Wenn dieser Inhalt noch NIE gesendet wurde, wird er JETZT gesendet!
-            if pdf_hash in state["sent_hashes"]:
+            # Wenn NICHT erzwungen, greift die normale Sperre gegen doppeltes Senden
+            if not force_send and pdf_hash in state["sent_hashes"]:
                 continue
 
-            # Sofort speichern, damit es nie doppelt kommt
-            state["sent_hashes"].append(pdf_hash)
-            save_state(state)
+            # Den Hash dauerhaft merken, damit beim nächsten automatischen Lauf nichts doppelt kommt
+            if pdf_hash not in state["sent_hashes"]:
+                state["sent_hashes"].append(pdf_hash)
+                save_state(state)
 
-            # Dokumententyp bestimmen
             doc_type = "🏆 Schlussrangliste" if "schluss" in pdf_url.lower() or "rl" in pdf_url.lower() else "📊 Statistik"
             
-            # Post erstellen
             caption = f"🏟 <b>{escape(fest['fest_name'])}</b>\n"
             if schwinger:
                 caption += f"🤼 <b>{escape(schwinger)} Aktivschwinger</b>\n"
@@ -193,9 +191,8 @@ def process_fest(fest, state):
 
             filename = pdf_url.split("/")[-1].split("?")[0]
             
-            # Direkt rausballern in den Kanal!
             send_telegram_document(pdf_bytes, filename, caption, {"inline_keyboard": [buttons]})
-            print(f"Erfolgreich gepostet: {filename}")
+            print(f"Erfolgreich gesendet: {filename}")
             
             time.sleep(2)
         except Exception as exc:
@@ -207,12 +204,17 @@ def main():
         
     state = load_state()
     
+    # Erkennen, ob der Workflow manuell gestartet wurde
+    is_manual_run = os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch"
+    
     try:
         fests = collect_active_fests()
         for fest in fests:
-            process_fest(fest, state)
+            # Wenn manuell gestartet ("Run workflow"), wird das Senden erzwungen (force_send=True)
+            # Dadurch ignoriert er die alte Hash-Liste komplett und haut die PDFs raus!
+            process_fest(fest, state, force_send=is_manual_run)
             
-        print("Durchlauf beendet. Alle neuen Listen von heute wurden, falls vorhanden, gepostet.")
+        print("Durchlauf beendet.")
     except Exception as exc:
         print(f"Fehler im Ablauf: {exc}")
 
