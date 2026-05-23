@@ -13,19 +13,23 @@ from bs4 import BeautifulSoup
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# Die korrekte Hauptdomain des ESV
 BASE_URL = "https://esv.ch"
 RANGLISTEN_URL = "https://esv.ch/ranglisten/"
 STATE_FILE = "state.json"
 
+# Die perfekten Browser-Headers, um den 403-Blocker des ESV-Servers zu umgehen
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Cache-Control": "no-cache"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Referer": "https://esv.ch/"
 }
 
 def load_state():
     if os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch":
-        print("MANUELLER START: Sende alle aktuellen PDFs sofort raus!")
+        print("MANUELLER START: Sende alle heutigen PDFs sofort raus!")
         return {"known_pdfs": {}, "baseline_done": True}
 
     if os.path.exists(STATE_FILE):
@@ -47,7 +51,7 @@ def should_track_pdf(href):
     if not href_lower.endswith(".pdf"):
         return False
 
-    # Blockiere unwichtige Listen
+    # Unwichtige Listen blockieren
     blocked = ["startliste", "einteilung", "notizblatt", "paarung", "zwischenrang"]
     if any(b in href_lower for b in blocked):
         return False
@@ -56,7 +60,6 @@ def should_track_pdf(href):
     return any(req in href_lower for req in ["statistik", "-st", "_st", "schluss", "-rl", "_rl"])
 
 def process_fest_page(fest_url, state):
-    print(f"Prüfe Fest-Unterseite: {fest_url}")
     try:
         soup = get_soup(fest_url)
     except Exception as e:
@@ -66,23 +69,25 @@ def process_fest_page(fest_url, state):
     page_text = soup.get_text(" ")
     page_text_lower = page_text.lower()
 
-    # Filter 1: Nur Aktive durchlassen
-    if "aktiv" not in page_text_lower:
+    # Festname aus dem Titel holen
+    title_tag = soup.find("h1") or soup.find("h2") or soup.find("title")
+    fest_name = title_tag.get_text(strip=True) if title_tag else "Schwingfest"
+    
+    # 1. FILTER: Sichert ab, dass es ein AKTIV-Fest ist
+    if "aktiv" not in page_text_lower and "aktiv" not in fest_name.lower():
         return
-    # Filter 2: Nachwuchs komplett blockieren
+    # 2. FILTER: Schützt vor Nachwuchs-Spam
     if any(bad in page_text_lower for bad in ["jung", "nachwuchs", "bueb", "knaben", "schueler", "schüler"]):
         return
 
-    # Festname aus dem Seitentitel ziehen
-    title_tag = soup.find("h1") or soup.find("h2") or soup.find("title")
-    fest_name = title_tag.get_text(strip=True) if title_tag else "Schwingfest"
-    fest_name = re.sub(r"(Rangliste|Statistik|Meldungen|ESV).* ", "", fest_name, flags=re.IGNORECASE).strip()
+    # Festnamen säubern
+    fest_name = re.sub(r"(Rangliste|Statistik|Meldungen|ESV|ARLS).*", "", fest_name, flags=re.IGNORECASE).strip()
 
-    # Anzahl Schwinger ermitteln
+    # Schwingeranzahl ermitteln
     schwinger_match = re.search(r"Anzahl Schwinger\s+(\d+)", page_text, flags=re.IGNORECASE)
     schwinger = schwinger_match.group(1) if schwinger_match else ""
 
-    # Fest-Webseite (externe Links) suchen
+    # Fest-Webseite suchen
     website = ""
     for a in soup.find_all("a", href=True):
         href = a["href"].strip()
@@ -90,7 +95,7 @@ def process_fest_page(fest_url, state):
             website = href
             break
 
-    # Alle PDF-Links auf dieser Festunterseite verarbeiten
+    # Alle PDFs durchgehen
     for a in soup.find_all("a", href=True):
         href = a["href"]
         if not should_track_pdf(href):
@@ -104,7 +109,7 @@ def process_fest_page(fest_url, state):
             res.raise_for_status()
             pdf_hash = hashlib.md5(res.content).hexdigest()
 
-            # Dubletten-Schutz (wurde diese Version schon gesendet?)
+            # Dubletten-Schutz (Inhaltsvergleich)
             if state["known_pdfs"].get(pdf_url) == pdf_hash:
                 continue
 
@@ -112,14 +117,13 @@ def process_fest_page(fest_url, state):
             save_state(state)
 
             if not state["baseline_done"]:
-                print(f"Baseline-Modus speichert im Hintergrund: {filename}")
+                print(f"Baseline speichert: {filename}")
                 continue
 
-            # Zuordnung Dokumenten-Typ
             is_schluss = "schluss" in filename.lower() or "-rl" in filename.lower() or "_rl" in filename.lower()
             doc_emoji = "🏆 Schlussrangliste" if is_schluss else "📊 Statistik"
 
-            # Telegram Nachricht zusammenbauen
+            # Kompaktes Design für Telegram
             caption = f"🏟 <b>{escape(fest_name)}</b>\n"
             if schwinger:
                 caption += f"🤼 <b>{escape(schwinger)} Aktivschwinger</b>\n"
@@ -131,7 +135,7 @@ def process_fest_page(fest_url, state):
             buttons.append({"text": "🔗 Direktlink ESV", "url": pdf_url})
             reply_markup = {"inline_keyboard": [buttons]}
 
-            print(f"Sende Dokument: {filename}")
+            print(f"Sende neue Datei: {filename}")
             telegram_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
             payload = {
                 "chat_id": CHAT_ID, 
@@ -149,7 +153,7 @@ def process_fest_page(fest_url, state):
 
 def main():
     if not BOT_TOKEN or not CHAT_ID:
-        raise ValueError("BOT_TOKEN oder CHAT_ID fehlt in den Umgebungsvariablen!")
+        raise ValueError("BOT_TOKEN oder CHAT_ID fehlt in den Einstellungen!")
 
     state = load_state()
     
@@ -159,25 +163,25 @@ def main():
         print(f"Fehler beim Laden der ESV-Übersicht: {e}")
         return
 
-    # Finde alle aktuellen Fest-Links (anlass=XXXX) direkt auf der Hauptseite
+    # Alle Fest-URLs unfiltriert einsammeln
     anlass_urls = set()
     for link in soup.find_all("a", href=True):
         href = link["href"]
         if "anlass=" in href:
             anlass_urls.add(urljoin(BASE_URL, href))
 
-    print(f"{len(anlass_urls)} Feste auf der Übersicht gefunden. Starte Abruf...")
+    print(f"{len(anlass_urls)} Festsysteme auf Übersicht gefunden. Starte Abruf...")
 
-    # Verarbeite die neuesten Feste (die ersten 10 bis 15 Einträge reichen völlig aus)
+    # Verarbeite die obersten Festsysteme des Wochenendes
     for url in list(anlass_urls)[:15]:
         process_fest_page(url, state)
 
     if not state["baseline_done"]:
         state["baseline_done"] = True
         save_state(state)
-        print("Baseline erfolgreich gesetzt.")
+        print("Baseline gesetzt.")
 
-    print("Bot-Lauf erfolgreich beendet.")
+    print("Bot-Lauf beendet.")
 
 if __name__ == "__main__":
     main()
