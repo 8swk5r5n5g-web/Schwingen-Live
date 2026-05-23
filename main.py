@@ -191,8 +191,17 @@ def is_schlussrangliste(href, link_text=""):
 
 def get_gang_nummer(href, link_text):
     combined = f"{href} {link_text}".lower()
+    # Deutlich aggressivere Suche nach Zahlen (z.B. "5. Gang", "5 Gang", "5G", "gang 5")
     gang_match = re.search(r"(\d+)\.?\s*(gang|g\b)", combined)
-    return int(gang_match.group(1)) if gang_match else 0
+    if gang_match:
+        return int(gang_match.group(1))
+    
+    # Notfall-Suche nach irgendeiner freistehenden Zahl zwischen 1 und 6 im Text
+    zahlen = re.findall(r"\b([1-6])\b", combined)
+    if zahlen:
+        return int(zahlen[-1])
+        
+    return 0
 
 def get_pdf_title(href, link_text, gang_num):
     text = clean_text(link_text)
@@ -231,9 +240,12 @@ def process_fest(fest, state):
 
     print(f"Scanne: {fest['fest_name']} (ID: {anlass_id})")
     
-    # Fest-Speicher initialisieren, falls neu
     if anlass_id not in state["fests"]:
-        state["fests"][anlass_id] = {"last_gang": 0, "has_schlussrangliste": False}
+        state["fests"][anlass_id] = {"last_gang": 0, "last_hash": "", "has_schlussrangliste": False}
+
+    # Abwärtskompatibilität für alte state.json Einträge sichern
+    if "last_hash" not in state["fests"][anlass_id]:
+        state["fests"][anlass_id]["last_hash"] = ""
 
     statistiken = []
     schlussrangliste = None
@@ -253,7 +265,6 @@ def process_fest(fest, state):
             gang = get_gang_nummer(href, link_text)
             statistiken.append({"url": pdf_url, "href": href, "link_text": link_text, "gang": gang})
 
-    # BUTTONS BAUEN
     buttons = []
     if detail_infos.get("website"):
         buttons.append({"text": "🌐 Fest-Webseite", "url": detail_infos.get("website")})
@@ -261,17 +272,22 @@ def process_fest(fest, state):
 
     # 1. VERARBEITUNG DER STATISTIK
     if statistiken:
+        # Sortiere primär nach Gangnummer. Wenn alle 0 sind, entscheidet die Reihenfolge auf der Seite
         neueste_statistik = max(statistiken, key=lambda x: x["gang"])
         aktuelle_gang_num = neueste_statistik["gang"]
         letzte_gesendete_gang_num = state["fests"][anlass_id]["last_gang"]
+        letzter_hash = state["fests"][anlass_id]["last_hash"]
 
-        print(f"-> Gefundener Gang auf ESV: {aktuelle_gang_num} | Zuletzt gesendet: {letzte_gesendete_gang_num}")
+        try:
+            pdf_bytes = get_pdf_bytes(neueste_statistik["url"])
+            pdf_hash = hashlib.md5(pdf_bytes).hexdigest()
+            filename = "" .join(neueste_statistik["url"].split("/")[-1].split("?")[0])
 
-        # Nur senden, wenn die Gangnummer ECHT HÖHER ist als die zuvor gesendete!
-        if aktuelle_gang_num > letzte_gesendete_gang_num:
-            try:
-                pdf_bytes = get_pdf_bytes(neueste_statistik["url"])
-                filename = neueste_statistik["url"].split("/")[-1].split("?")[0]
+            # BEDINGUNG FÜR SENDEN: Entweder Gangnummer ist echt höher ODER der Inhalt (Hash) hat sich geändert!
+            is_new_gang = (aktuelle_gang_num > 0 and aktuelle_gang_num > letzte_gesendete_gang_num)
+            is_new_content = (pdf_hash != letzter_hash)
+
+            if is_new_gang or (aktuelle_gang_num == 0 and is_new_content):
                 doc_title = get_pdf_title(neueste_statistik["href"], neueste_statistik["link_text"], aktuelle_gang_num)
                 
                 caption = f"🏟 <b>{escape(fest['fest_name'])}</b>\n"
@@ -279,16 +295,18 @@ def process_fest(fest, state):
                     caption += f"🤼 <b>{escape(detail_infos['schwinger'])} Aktivschwinger</b>\n"
                 caption += f"📝 <b>📊 {doc_title}</b>"
 
+                # Zustand sichern
                 state["fests"][anlass_id]["last_gang"] = aktuelle_gang_num
+                state["fests"][anlass_id]["last_hash"] = pdf_hash
                 save_state(state)
 
                 if state["baseline_done"]:
-                    print(f"Sende neue Statistik (Gang {aktuelle_gang_num}) für {fest['fest_name']}")
+                    print(f"!!! SENDE STATISTIK !!! (Gang {aktuelle_gang_num}) für {fest['fest_name']}")
                     send_telegram_document(pdf_bytes, filename, caption, reply_markup)
-            except Exception as exc:
-                print(f"Fehler bei Statistik-Verarbeitung: {exc}")
-        else:
-            print(f"-> Überspringe Statistik. Keine neuere Gangnummer (aktuell: {aktuelle_gang_num} <= gesendet: {letzte_gesendete_gang_num})")
+            else:
+                print(f"-> Statistik unverändert (Gang {aktuelle_gang_num}, Inhalt bekannt).")
+        except Exception as exc:
+            print(f"Fehler bei Statistik-Verarbeitung: {exc}")
 
     # 2. VERARBEITUNG DER SCHLUSSRANGLISTE
     if schlussrangliste and not state["fests"][anlass_id]["has_schlussrangliste"]:
@@ -305,7 +323,7 @@ def process_fest(fest, state):
             save_state(state)
 
             if state["baseline_done"]:
-                print(f"Sende Schlussrangliste für {fest['fest_name']}")
+                print(f"!!! SENDE SCHLUSSRANGLISTE !!! für {fest['fest_name']}")
                 send_telegram_document(pdf_bytes, filename, caption, reply_markup)
         except Exception as exc:
             print(f"Fehler bei Schlussrangliste: {exc}")
