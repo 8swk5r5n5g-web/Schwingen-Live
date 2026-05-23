@@ -25,12 +25,7 @@ HEADERS = {
 }
 
 def load_state():
-    # Wenn DU den Bot manuell startest, setzen wir das Gedächtnis kurz zurück,
-    # damit er die Seite frisch prüft und fehlende finale Listen sofort sendet!
-    if os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch":
-        print("MANUELLER START: Prüfe alle verfügbaren Listen frisch und sende Fehlendes!")
-        return {"known_pdfs": {}}
-
+    # BOMBENSICHER: Kein Löschen mehr bei manuellem Start! Der Speicher bleibt IMMER erhalten.
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r", encoding="utf-8") as file:
             return json.load(file)
@@ -132,11 +127,8 @@ def collect_active_fests():
 
 def get_gang_nummer(href, link_text):
     combined = f"{href} {link_text}".lower()
-    
-    # WICHTIG: Wenn es die finale Statistik OHNE Gangangabe ist (wie im Bild)
     if combined.strip() == "statistik" or "statistik.pdf" in href.lower():
-        return 99  # Wir geben ihr die höchste Priorität, damit sie alles schlägt!
-
+        return 99  # Höchste Priorität für das finale Dokument ohne Gangzahl
     gang_match = re.search(r"(\d+)\.?\s*(gang|g\b|gängen)", combined)
     if gang_match:
         return int(gang_match.group(1))
@@ -148,7 +140,7 @@ def get_pdf_title(href, link_text, gang_num):
     if "schluss" in text.lower() or "schluss" in href.lower() or "-rl" in href.lower():
         return "Schlussrangliste"
     if gang_num == 99:
-        return "Finale Statistik"
+        return "Statistik"
     if gang_num > 0:
         return f"Statistik (nach dem {gang_num}. Gang)"
     return "Statistik"
@@ -181,7 +173,6 @@ def process_fest(fest, state):
     buttons = [{"text": "🌐 Fest-Webseite", "url": website}] if website else []
     reply_markup = {"inline_keyboard": [buttons]} if buttons else None
 
-    # Zuerst alle gültigen Dokumente sammeln
     statistiken = []
     schlussranglisten = []
 
@@ -199,19 +190,26 @@ def process_fest(fest, state):
             continue
 
         pdf_url = normalise_url(href)
+        filename = pdf_url.split("/")[-1].split("?")[0]
+        storage_key = f"{fest['anlass_id']}_{filename}"
+
+        # DOPPELPOST-SCHUTZ: Wenn wir diese exakte Datei jemals gesendet haben, ignorieren wir sie komplett!
+        if storage_key in state["known_pdfs"]:
+            continue
+
         gang = get_gang_nummer(href, link_text)
 
         if is_rl:
-            schlussranglisten.append({"url": pdf_url, "href": href, "link_text": link_text, "gang": gang})
+            schlussranglisten.append({"url": pdf_url, "href": href, "link_text": link_text, "gang": gang, "key": storage_key})
         elif is_stat:
-            statistiken.append({"url": pdf_url, "href": href, "link_text": link_text, "gang": gang})
+            statistiken.append({"url": pdf_url, "href": href, "link_text": link_text, "gang": gang, "key": storage_key})
 
-    # Verarbeite die jeweils aktuellste Statistik
+    # Verarbeite die aktuellste Statistik (falls noch nicht gesendet)
     if statistiken:
         neueste_stat = max(statistiken, key=lambda x: x["gang"])
         verarbeite_dokument(neueste_stat, fest, state, reply_markup, schwinger_txt)
 
-    # Verarbeite die Schlussrangliste
+    # Verarbeite die Schlussrangliste (falls noch nicht gesendet)
     if schlussranglisten:
         neueste_rl = max(schlussranglisten, key=lambda x: x["gang"])
         verarbeite_dokument(neueste_rl, fest, state, reply_markup, schwinger_txt)
@@ -224,12 +222,8 @@ def verarbeite_dokument(doc, fest, state, reply_markup, schwinger_txt):
         pdf_bytes = res.content
         pdf_hash = hashlib.md5(pdf_bytes).hexdigest()
 
-        storage_key = f"{fest['anlass_id']}_{filename}"
-
-        if state["known_pdfs"].get(storage_key) == pdf_hash:
-            return  # Bereits gesendet, überspringen
-
-        state["known_pdfs"][storage_key] = pdf_hash
+        # Zustand dauerhaft im Speicher ablegen
+        state["known_pdfs"][doc["key"]] = pdf_hash
         save_state(state)
 
         doc_title = get_pdf_title(doc["href"], doc["link_text"], doc["gang"])
