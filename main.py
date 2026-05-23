@@ -19,14 +19,12 @@ RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
 STATE_FILE = "state.json"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 Schwingen-Live-Bot/1.5",
+    "User-Agent": "Mozilla/5.0 Schwingen-Live-Bot/1.6",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
 }
 
 def load_state():
-    # Wenn manuell gestartet wird (Workflow Dispatch), ignorieren wir den alten Zustand,
-    # damit heute alles sofort und garantiert gesendet wird!
     if os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch":
         print("Manueller Start erkannt: Erzwinge frischen Scan für die heutigen Listen!")
         return {"known_pdfs": {}, "baseline_done": True}
@@ -41,9 +39,6 @@ def load_state():
         state["known_pdfs"] = {}
 
     if "baseline_done" not in state:
-        state["baseline_done"] = False
-
-    if not state["known_pdfs"]:
         state["baseline_done"] = False
 
     return state
@@ -76,12 +71,6 @@ def extract_date(text):
 def parse_date(date_text):
     return datetime.strptime(date_text, "%d.%m.%Y")
 
-def get_anlass_id(url):
-    parsed = urlparse(url)
-    query = parse_qs(parsed.query)
-    values = query.get("anlass", [])
-    return values[0] if values else ""
-
 def is_jung_or_nachwuchs(text):
     text = text.lower()
     blocked = ["jung", "nachwuchs", "bueb", "bube", "buben", "schüler", "schueler", "knaben"]
@@ -96,7 +85,9 @@ def collect_active_fests():
         if "anlass=" not in href:
             continue
 
-        anlass_id = get_anlass_id(href)
+        parsed = urlparse(href)
+        query = parse_qs(parsed.query)
+        anlass_id = query.get("anlass", [""])[0]
         text = clean_text(link.get_text(" ", strip=True))
 
         if not anlass_id or not text:
@@ -104,29 +95,31 @@ def collect_active_fests():
 
         if anlass_id not in grouped:
             grouped[anlass_id] = {"detail_url": href, "parts": []}
-
         grouped[anlass_id]["parts"].append(text)
 
     entries = []
     for data in grouped.values():
         parts = data["parts"]
-        if len(parts) < 5:
+        if not parts:
             continue
 
-        date_text = extract_date(parts[0])
-        fest_name = clean_text(parts[1])
-        category = clean_text(parts[2]).lower()
-        location = clean_text(parts[3])
         row_text = clean_text(" ".join(parts))
-
-        if not date_text or category != "aktiv" or is_jung_or_nachwuchs(row_text):
+        date_text = extract_date(row_text)
+        
+        if not date_text or is_jung_or_nachwuchs(row_text):
             continue
+
+        # Prüfen, ob es ein Aktivfest ist
+        if "aktiv" not in row_text.lower():
+            continue
+
+        # Den Festnamen ermitteln (ist meist das zweite Element, falls vorhanden)
+        fest_name = clean_text(parts[1]) if len(parts) > 1 else "Schwingfest"
 
         entries.append({
             "detail_url": data["detail_url"],
             "date_text": date_text,
             "fest_name": fest_name,
-            "location": location,
         })
 
     if not entries:
@@ -138,7 +131,6 @@ def collect_active_fests():
 
     print(f"Alle Aktiv-Feste gefunden: {len(entries)}")
     print(f"Neuestes Datum auf der Seite: {newest_date}")
-    
     return newest_entries
 
 def extract_number_after(label, text):
@@ -204,17 +196,14 @@ def process_pdf(pdf_url, pdf_title, fest, infos, state):
     pdf_bytes, pdf_hash = get_pdf_bytes_and_hash(pdf_url)
     old_entry = state["known_pdfs"].get(pdf_url)
 
-    # Bestimme Emoji für Dokument
     doc_emoji = "🏆 Schlussrangliste" if "schluss" in pdf_title.lower() or "rl" in pdf_url.lower() else "📊 Statistik"
     
-    # Nachricht gemäss Wunsch ultrakompakt aufbauen
     caption = f"🏟 <b>{escape(fest.get('fest_name', 'Schwingfest'))}</b>\n"
     schwinger = infos.get("schwinger", "")
     if schwinger:
         caption += f"🤼 <b>{escape(schwinger)} Aktivschwinger</b>\n"
     caption += f"📝 <b>{doc_emoji}</b>"
 
-    # Buttons vorbereiten
     buttons = []
     if infos.get("website"):
         buttons.append({"text": "🌐 Fest-Webseite", "url": infos.get("website")})
@@ -223,7 +212,6 @@ def process_pdf(pdf_url, pdf_title, fest, infos, state):
 
     filename = pdf_url.split("/")[-1].split("?")[0]
 
-    # FALL 1: Komplett neue URL
     if old_entry is None:
         state["known_pdfs"][pdf_url] = {"hash": pdf_hash, "title": pdf_title}
         save_state(state)
@@ -236,7 +224,6 @@ def process_pdf(pdf_url, pdf_title, fest, infos, state):
         send_telegram_document(pdf_bytes, filename, caption, reply_markup)
         return
 
-    # FALL 2: Bekannte URL, aber der INHALT (Hash) hat sich verändert -> NACH JEDEM GANG!
     old_hash = old_entry.get("hash", "") if isinstance(old_entry, dict) else old_entry
 
     if old_hash != pdf_hash:
@@ -250,7 +237,7 @@ def process_pdf(pdf_url, pdf_title, fest, infos, state):
         if not state["baseline_done"]:
             return
 
-        print(f"Update für Gang-Statistik erkannt! Sende Aktualisierung: {pdf_url}")
+        print(f"Inhalts-Update erkannt! Sende Aktualisierung: {pdf_url}")
         send_telegram_document(pdf_bytes, filename, caption, reply_markup)
         return
 
