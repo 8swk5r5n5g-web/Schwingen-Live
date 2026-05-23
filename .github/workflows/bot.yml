@@ -1,10 +1,10 @@
-name: Schwingfest Bot Live Ticker (10 min)
+name: Schwingfest Bot 5-Minuten-Takt
 
 on:
   schedule:
-    # Startet samstags und sonntags jeweils um 07:00 Uhr morgens Schweizer Zeit (05:00 UTC)
-    - cron: '0 5 * * 6,0'
-  workflow_dispatch: # Erlaubt es dir, die 10-Stunden-Überwachung bei Bedarf auch manuell zu starten
+    # Taktet den Bot am Wochenende (Samstag und Sonntag) alle 5 Minuten ein
+    - cron: '*/5 * * * 6,0'
+  workflow_dispatch: # Ermöglicht dir jederzeit einen händischen Start
 
 jobs:
   run-bot:
@@ -21,22 +21,16 @@ jobs:
       - name: Abhängigkeiten installieren
         run: pip install requests beautifulsoup4
 
-      - name: Bot in 10-Minuten-Schleife ausführen
+      - name: Zustand wiederherstellen
+        uses: actions/cache@v3
+        with:
+          path: state.json
+          key: state-file-${{ github.run_id }}
+          restore-keys: |
+            state-file-
+
+      - name: Bot ausführen
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: |
-          echo "Startzeitpunkt der Überwachung: $(date)"
-          
-          # 60 Durchgänge à 10 Minuten (600 Sekunden) = Exakt 10 Stunden Dauerüberwachung!
-          # Damit ist das Fest von 07:00 Uhr morgens bis 17:00 Uhr abends lückenlos abgedeckt.
-          for i in {1..60}
-          do
-            echo "----------------------------------------"
-            echo "START LIVE-SCAN NR. $i von 60..."
-            python main.py
-            echo "Scan beendet. Warte 10 Minuten (600 Sekunden) bis zum nächsten Mal..."
-            sleep 600
-          done
-          
-          echo "Endzeitpunkt der Überwachung: $(date)"
+        run: python main.py
