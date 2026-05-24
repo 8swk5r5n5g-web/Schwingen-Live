@@ -15,8 +15,8 @@ from bs4 import BeautifulSoup
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-BASE_URL = "https://arls.esv.ch"
-RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
+BASE_URL = "https://esv.ch"
+RANGLISTEN_URL = "https://esv.ch/ranglisten/"
 STATE_FILE = "state.json"
 MAX_DETAIL_PAGES = 300
 
