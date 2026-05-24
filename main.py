@@ -115,29 +115,24 @@ def collect_active_fests():
 
 def get_gang_nummer(href, link_text):
     combined = f"{href} {link_text}".lower()
-    gang_match = re.search(r"\b([1-5])\b\.?\s*(gang|g\b)", combined)
+    gang_match = re.search(r"\b([1-6])\b\.?\s*(gang|g\b)", combined)
     if gang_match:
         return int(gang_match.group(1))
-    zahlen = re.findall(r"\b([1-5])\b", combined)
+    zahlen = re.findall(r"\b([1-6])\b", combined)
     if zahlen:
         return int(zahlen[-1])
-    if "statistik" in combined:
-        return 99
     return 0
 
 def get_pdf_title(href, link_text, gang_num):
-    text = clean_text(link_text)
-    if "schluss" in text.lower() or "schluss" in href.lower() or "-rl" in href.lower():
+    combined = f"{href} {link_text}".lower()
+    if "schluss" in combined or "-rl" in combined or "rangliste" in combined:
         return "Schlussrangliste"
-    if gang_num == 99:
-        return "Statistik"
     if gang_num > 0:
         return f"Statistik (nach dem {gang_num}. Gang)"
     return "Statistik"
 
 def send_telegram_document(pdf_bytes, filename, caption, reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-    # FEHLER BEHOBEN: Hier wird die CHAT_ID jetzt wieder ganz normal übergeben
     data = {"chat_id": CHAT_ID, "caption": caption[:1024], "parse_mode": "HTML"}
     if reply_markup:
         data["reply_markup"] = json.dumps(reply_markup)
@@ -170,15 +165,19 @@ def process_fest(fest, state):
     for link in soup.find_all("a", href=True):
         href = link["href"]
         link_text = clean_text(link.get_text(" ", strip=True))
+        combined_meta = f"{href} {link_text}".lower()
 
         if not href.lower().split("?")[0].endswith(".pdf"):
             continue
-        if any(w in f"{href} {link_text}".lower() for w in ["zwischen", "startliste", "einteilung", "notizblatt"]):
+            
+        # 🛑 EISERNE SPERRE: Zwischenranglisten, Startlisten & Einteilungen fliegen sofort raus!
+        if any(w in combined_meta for w in ["zwischen", "startliste", "einteilung", "notizblatt"]):
             continue
 
-        is_stat = "statistik" in href.lower() or "statistik" in link_text.lower() or "-st.pdf" in href.lower()
-        is_rl = "schluss" in href.lower() or "schluss" in link_text.lower() or "-rl.pdf" in href.lower()
-        
+        # Nur echte Statistiken oder Schlussranglisten durchlassen
+        is_stat = "statistik" in combined_meta or "st_" in combined_meta or "st." in combined_meta
+        is_rl = "schluss" in combined_meta or "rangliste" in combined_meta or "-rl" in combined_meta
+
         if not (is_stat or is_rl):
             continue
 
