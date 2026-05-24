@@ -1,20 +1,22 @@
 import os
 import re
 import json
-import time
 import hashlib
 from io import BytesIO
 from html import escape
+from datetime import datetime
+from urllib.parse import urlparse, parse_qs
+
 import requests
 from bs4 import BeautifulSoup
 
-# HIER deine festen Daten eintragen (oder als Umgebungsvariable übergeben)
-BOT_TOKEN = "DEIN_TELEGRAM_BOT_TOKEN"
-CHAT_ID = "DEIN_TELEGRAM_CHAT_ID"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
 BASE_URL = "https://arls.esv.ch"
 RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
-STATE_FILE = "/root/tradingbot/state_schwingen.json" # Pfad anpassen
+STATE_FILE = "state.json"
+MAX_DETAIL_PAGES = 300
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -25,17 +27,30 @@ HEADERS = {
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r", encoding="utf-8") as file:
-            return json.load(file)
+            try:
+                return json.load(file)
+            except Exception:
+                return {"known_pdfs": {}}
     return {"known_pdfs": {}}
 
 def save_state(state):
     with open(STATE_FILE, "w", encoding="utf-8") as file:
         json.dump(state, file, ensure_ascii=False, indent=2)
 
+def get_page(url, retries=3):
+    for attempt in range(1, retries + 1):
+        try:
+            response = requests.get(url, headers=HEADERS, timeout=30)
+            response.raise_for_status()
+            return response.text
+        except requests.exceptions.RequestException:
+            import time
+            time.sleep(2)
+    raise RuntimeError(f"Seite konnte nicht geladen werden: {url}")
+
 def get_soup(url):
-    res = requests.get(url, headers=HEADERS, timeout=30)
-    res.raise_for_status()
-    return BeautifulSoup(res.text, "html.parser")
+    html = get_page(url)
+    return BeautifulSoup(html, "html.parser")
 
 def normalise_url(url):
     if url.startswith("http"):
@@ -45,10 +60,21 @@ def normalise_url(url):
 def clean_text(text):
     return " ".join(text.replace("\xa0", " ").replace(" .", ".").replace(". ", ".").split()).strip()
 
+def extract_date_from_text(text):
+    text = clean_text(text)
+    match = re.search(r"\d{2}\.\d{2}\.?\d{4}", text)
+    return match.group(0).replace("..", ".") if match else ""
+
 def is_jung_or_nachwuchs(text):
     text = text.lower()
     blocked_words = ["jung", "nachwuchs", "bueb", "bube", "buben", "schüler", "schueler", "knaben"]
     return any(word in text for word in blocked_words)
+
+def get_anlass_id(url):
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    values = query.get("anlass", [])
+    return values[0] if values else ""
 
 def collect_active_fests():
     try:
@@ -63,13 +89,9 @@ def collect_active_fests():
         full_url = normalise_url(href)
         if "anlass=" not in full_url:
             continue
-        
-        # Anlass ID extrahieren
-        from urllib.parse import urlparse, parse_qs
-        anlass_id = parse_qs(urlparse(full_url).query).get("anlass", [""])[0]
+        anlass_id = get_anlass_id(full_url)
         if not anlass_id:
             continue
-            
         text = clean_text(link.get_text(" ", strip=True))
         if not text:
             continue
@@ -89,8 +111,12 @@ def collect_active_fests():
         if category != "aktiv" or is_jung_or_nachwuchs(row_text):
             continue
 
-        entries.append({"anlass_id": anlass_id, "detail_url": data["detail_url"], "fest_name": fest_name})
-    return entries
+        entries.append({
+            "anlass_id": anlass_id,
+            "detail_url": data["detail_url"],
+            "fest_name": fest_name,
+        })
+    return entries[:MAX_DETAIL_PAGES]
 
 def get_gang_nummer(href, link_text):
     combined = f"{href} {link_text}".lower()
@@ -104,6 +130,16 @@ def get_gang_nummer(href, link_text):
         return 99
     return 0
 
+def get_pdf_title(href, link_text, gang_num):
+    text = clean_text(link_text)
+    if "schluss" in text.lower() or "schluss" in href.lower() or "-rl" in href.lower():
+        return "Schlussrangliste"
+    if gang_num == 99:
+        return "Statistik"
+    if gang_num > 0:
+        return f"Statistik (nach dem {gang_num}. Gang)"
+    return "Statistik"
+
 def send_telegram_document(pdf_bytes, filename, caption, reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
     data = {"chat_id": CHAT_ID, "caption": caption[:1024], "parse_mode": "HTML"}
@@ -112,79 +148,83 @@ def send_telegram_document(pdf_bytes, filename, caption, reply_markup=None):
     files = {"document": (filename, BytesIO(pdf_bytes), "application/pdf")}
     requests.post(url, data=data, files=files, timeout=60).raise_for_status()
 
-def main():
-    print("Schwingbot Aktiv-Dienst gestartet...")
-    state = load_state()
+def process_fest(fest, state):
+    try:
+        soup = get_soup(fest["detail_url"])
+    except Exception:
+        return
 
-    while True:
+    website = ""
+    for link in soup.find_all("a", href=True):
+        href = link["href"].strip()
+        if href.startswith("http") and "esv.ch" not in href:
+            website = href
+            break
+
+    page_text = clean_text(soup.get_text(" ", strip=True))
+    schwinger = re.search(r"Anzahl Schwinger\s+(\d+)", page_text, flags=re.IGNORECASE)
+    schwinger_txt = schwinger.group(1) if schwinger else ""
+
+    buttons = [{"text": "🌐 Fest-Webseite", "url": website}] if website else []
+    reply_markup = {"inline_keyboard": [buttons]} if buttons else None
+
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
+        link_text = clean_text(link.get_text(" ", strip=True))
+
+        if not href.lower().split("?")[0].endswith(".pdf"):
+            continue
+        if any(w in f"{href} {link_text}".lower() for w in ["zwischen", "startliste", "einteilung", "notizblatt"]):
+            continue
+
+        is_stat = "statistik" in href.lower() or "statistik" in link_text.lower() or "-st.pdf" in href.lower()
+        is_rl = "schluss" in href.lower() or "schluss" in link_text.lower() or "-rl.pdf" in href.lower()
+        
+        if not (is_stat or is_rl):
+            continue
+
+        pdf_url = normalise_url(href)
+        filename = pdf_url.split("/")[-1].split("?")[0]
+        storage_key = f"{fest['anlass_id']}_{filename}"
+
+        if storage_key in state["known_pdfs"]:
+            continue
+
         try:
-            fests = collect_active_fests()
-            for fest in fests:
-                try:
-                    soup = get_soup(fest["detail_url"])
-                except Exception:
-                    continue
+            res = requests.get(pdf_url, headers=HEADERS, timeout=45)
+            res.raise_for_status()
+            pdf_bytes = res.content
+            
+            # WICHTIG: Sofort im Speicher ablegen
+            state["known_pdfs"][storage_key] = hashlib.md5(pdf_bytes).hexdigest()
+            save_state(state)
 
-                # Webseite extrahieren
-                website = ""
-                for link in soup.find_all("a", href=True):
-                    href = link["href"].strip()
-                    if href.startswith("http") and "esv.ch" not in href:
-                        website = href
-                        break
+            gang = get_gang_nummer(href, link_text)
+            doc_title = get_pdf_title(href, link_text, gang)
+            emoji = "🏆" if "Schluss" in doc_title else "📊"
 
-                page_text = clean_text(soup.get_text(" ", strip=True))
-                schwinger = re.search(r"Anzahl Schwinger\s+(\d+)", page_text, flags=re.IGNORECASE)
-                schwinger_txt = schwinger.group(1) if schwinger else ""
-                
-                buttons = [{"text": "🌐 Fest-Webseite", "url": website}] if website else []
-                reply_markup = {"inline_keyboard": [buttons]} if buttons else None
+            caption = f"🏟 <b>{escape(fest['fest_name'])}</b>\n"
+            if schwinger_txt:
+                caption += f"🤼 <b>{escape(schwinger_txt)} Aktivschwinger</b>\n"
+            caption += f"📝 <b>{emoji} {doc_title}</b>"
 
-                for link in soup.find_all("a", href=True):
-                    href = link["href"]
-                    link_text = clean_text(link.get_text(" ", strip=True))
-
-                    if not href.lower().split("?")[0].endswith(".pdf"):
-                        continue
-                    if any(w in f"{href} {link_text}".lower() for w in ["zwischen", "startliste", "einteilung", "notizblatt"]):
-                        continue
-
-                    is_stat = "statistik" in href.lower() or "statistik" in link_text.lower()
-                    is_rl = "schluss" in href.lower() or "schluss" in link_text.lower()
-                    if not (is_stat or is_rl):
-                        continue
-
-                    pdf_url = normalise_url(href)
-                    filename = pdf_url.split("/")[-1].split("?")[0]
-                    storage_key = f"{fest['anlass_id']}_{filename}"
-
-                    if storage_key in state["known_pdfs"]:
-                        continue
-
-                    # Download und Senden
-                    res = requests.get(pdf_url, headers=HEADERS, timeout=30)
-                    pdf_bytes = res.content
-                    
-                    state["known_pdfs"][storage_key] = hashlib.md5(pdf_bytes).hexdigest()
-                    save_state(state)
-
-                    gang = get_gang_nummer(href, link_text)
-                    title = "Schlussrangliste" if is_rl else ("Statistik" if gang == 99 else f"Statistik (nach dem {gang}. Gang)")
-                    emoji = "🏆" if is_rl else "📊"
-
-                    caption = f"🏟 <b>{escape(fest['fest_name'])}</b>\n"
-                    if schwinger_txt:
-                        caption += f"🤼 <b>{escape(schwinger_txt)} Aktivschwinger</b>\n"
-                    caption += f"📝 <b>{emoji} {title}</b>"
-
-                    print(f"Sende: {filename}")
-                    send_telegram_document(pdf_bytes, filename, caption, reply_markup)
+            print(f"SENDE LIVE-UPDATE: {filename}")
+            send_telegram_document(pdf_bytes, filename, caption, reply_markup)
 
         except Exception as e:
-            print(f"Fehler im Hauptzyklus: {e}")
+            print(f"Fehler bei PDF {filename}: {e}")
 
-        # ⏱ Präzise 5 Minuten warten bis zum nächsten Scan
-        time.sleep(300)
+def main():
+    if not BOT_TOKEN or not CHAT_ID:
+        raise ValueError("BOT_TOKEN oder CHAT_ID fehlt.")
+
+    state = load_state()
+    fests = collect_active_fests()
+
+    for fest in fests:
+        process_fest(fest, state)
+
+    print("Bot-Scan erfolgreich beendet.")
 
 if __name__ == "__main__":
     main()
