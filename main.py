@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 import hashlib
 from io import BytesIO
 from html import escape
@@ -41,7 +42,6 @@ def get_page(url, retries=3):
             response.raise_for_status()
             return response.text
         except requests.exceptions.RequestException:
-            import time
             time.sleep(3)
     raise RuntimeError(f"Seite konnte nicht geladen werden: {url}")
 
@@ -106,7 +106,6 @@ def collect_active_fests():
         category = clean_text(parts[2]).lower()
         row_text = clean_text(" ".join(parts))
 
-        # DATUMS-FILTER ENTFERNT: Er scannt jetzt alle aktuell gelisteten Feste!
         if category != "aktiv" or is_jung_or_nachwuchs(row_text):
             continue
 
@@ -221,13 +220,8 @@ def verarbeite_dokument(pdf_url, storage_key, filename, href, link_text, gang, f
     except Exception as e:
         print(f"Fehler bei Dokument {filename}: {e}")
 
-def main():
-    if not BOT_TOKEN or not CHAT_ID:
-        raise ValueError("BOT_TOKEN oder CHAT_ID fehlt.")
-
-    state = load_state()
+def run_ticker_cycle(state):
     fests = collect_active_fests()
-
     heute_str = datetime.now().strftime("%d.%m.%Y")
     is_baseline_run = (state.get("last_baseline_date", "") != heute_str)
 
@@ -242,7 +236,25 @@ def main():
         print(f"Baseline für den {heute_str} erfolgreich fixiert.")
     
     save_state(state)
-    print("Bot-Scan erfolgreich beendet.")
+
+def main():
+    if not BOT_TOKEN or not CHAT_ID:
+        raise ValueError("BOT_TOKEN oder CHAT_ID fehlt.")
+
+    state = load_state()
+    
+    # 🔁 DIE DAUERSCHLEIFE: Läuft für 60 Runden à 5 Minuten (= 5 Stunden Überwachung am Stück)
+    # Vollkommen unabhängig von der GitHub-Uhr!
+    for i in range(1, 61):
+        print(f"----------------------------------------")
+        print(f"START TICKER-SCAN NR. {i} von 60...")
+        try:
+            run_ticker_cycle(state)
+        except Exception as e:
+            print(f"Kritischer Fehler im Schleifendurchlauf: {e}")
+        
+        print("Scan beendet. Warte exakt 5 Minuten (300 Sekunden)...")
+        time.sleep(300)
 
 if __name__ == "__main__":
     main()
