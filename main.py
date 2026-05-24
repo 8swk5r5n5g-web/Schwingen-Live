@@ -80,9 +80,6 @@ def collect_active_fests():
         print(f"Fehler Übersicht: {e}")
         return []
 
-    heute_str = datetime.now().strftime("%d.%m.%Y")
-    print(f"Filtere Fests für das Datum: {heute_str}")
-
     grouped = {}
     for link in soup.find_all("a", href=True):
         href = link["href"]
@@ -109,9 +106,7 @@ def collect_active_fests():
         category = clean_text(parts[2]).lower()
         row_text = clean_text(" ".join(parts))
 
-        if date_text != heute_str:
-            continue
-
+        # DATUMS-FILTER ENTFERNT: Er scannt jetzt alle aktuell gelisteten Feste!
         if category != "aktiv" or is_jung_or_nachwuchs(row_text):
             continue
 
@@ -125,21 +120,14 @@ def collect_active_fests():
 
 def get_gang_nummer(href, link_text):
     combined = f"{href} {link_text}".lower()
-    
-    # Wenn im Text "statistik" steht, aber KEINE Zahl 1-5 vorkommt -> Finale Statistik (99)
     gang_match = re.search(r"\b([1-5])\b\.?\s*(gang|g\b)", combined)
     if gang_match:
         return int(gang_match.group(1))
-        
-    # Alternativ nach reinen Zahlen 1-5 im Text suchen
     zahlen = re.findall(r"\b([1-5])\b", combined)
     if zahlen:
         return int(zahlen[-1])
-        
-    # Wenn es eine Statistik ist, aber keine Gangnummer 1-5 hat -> Finale Statistik
     if "statistik" in combined:
         return 99
-        
     return 0
 
 def get_pdf_title(href, link_text, gang_num):
@@ -180,7 +168,6 @@ def process_fest(fest, state, is_baseline_run):
     buttons = [{"text": "🌐 Fest-Webseite", "url": website}] if website else []
     reply_markup = {"inline_keyboard": [buttons]} if buttons else None
 
-    # Jedes gefundene PDF einzeln durchgehen und verarbeiten
     for link in soup.find_all("a", href=True):
         href = link["href"]
         link_text = clean_text(link.get_text(" ", strip=True))
@@ -202,12 +189,9 @@ def process_fest(fest, state, is_baseline_run):
         storage_key = f"{fest['anlass_id']}_{filename}"
 
         gang = get_gang_nummer(href, link_text)
-
-        # Dokument direkt zur Verarbeitung schicken
         verarbeite_dokument(pdf_url, storage_key, filename, href, link_text, gang, fest, state, reply_markup, schwinger_txt, is_baseline_run)
 
 def verarbeite_dokument(pdf_url, storage_key, filename, href, link_text, gang, fest, state, reply_markup, schwinger_txt, is_baseline_run):
-    # Absoluter Doppelpost-Schutz: Wenn der Key bereits im state existiert, wird abgebrochen
     if storage_key in state["known_pdfs"]:
         return
 
@@ -217,10 +201,8 @@ def verarbeite_dokument(pdf_url, storage_key, filename, href, link_text, gang, f
         pdf_bytes = res.content
         pdf_hash = hashlib.md5(pdf_bytes).hexdigest()
 
-        # In der Merkliste speichern
         state["known_pdfs"][storage_key] = pdf_hash
 
-        # Wenn es der allererste Initialisierungslauf des Tages ist -> Nur lautlos speichern!
         if is_baseline_run:
             print(f"Baseline-Erfassung: {filename} lautlos registriert.")
             return
@@ -247,8 +229,6 @@ def main():
     fests = collect_active_fests()
 
     heute_str = datetime.now().strftime("%d.%m.%Y")
-    
-    # Wenn im Speicher ein anderes Datum steht als heute, machen wir den ersten Lauf lautlos
     is_baseline_run = (state.get("last_baseline_date", "") != heute_str)
 
     if is_baseline_run:
@@ -259,7 +239,7 @@ def main():
 
     if is_baseline_run:
         state["last_baseline_date"] = heute_str
-        print(f"Baseline für den {heute_str} erfolgreich fixiert. Ab dem nächsten Lauf wird live gesendet.")
+        print(f"Baseline für den {heute_str} erfolgreich fixiert.")
     
     save_state(state)
     print("Bot-Scan erfolgreich beendet.")
