@@ -240,7 +240,7 @@ def process_fest(fest, state):
         if not href.lower().split("?")[0].endswith(".pdf"):
             continue
 
-        # 🛑 RIGOROSE SPERRE: Keine Zwischenranglisten, Startlisten, Einteilungen
+        # 🛑 STRIKTE SPERRE: Keine Zwischenranglisten, Startlisten, Einteilungen
         if any(w in combined_meta for w in ["zwischen", "startliste", "einteilung", "notizblatt"]):
             continue
 
@@ -254,8 +254,9 @@ def process_fest(fest, state):
         pdf_url = normalise_url(href)
         filename = pdf_url.split("/")[-1].split("?")[0]
         
-        # BOMBENSICHERER IDENTIFIKATOR: Verhindert Duplikate über den Dateinamen
-        storage_key = f"{fest['anlass_id']}_{filename}"
+        # ⚡ TRICK FÜR DEN JETZIGEN 2. GANG: 
+        # Wir hängen temporär ein '_live' an den Key an, damit der blockierte 2. Gang JETZT SOFORT gesendet wird.
+        storage_key = f"{fest['anlass_id']}_{filename}_live"
 
         if storage_key in state["known_pdfs"]:
             continue
