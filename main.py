@@ -1,8 +1,8 @@
 import os
 import re
 import json
-import time
 import hashlib
+from io import BytesIO
 from html import escape
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
@@ -15,12 +15,8 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 BASE_URL = "https://arls.esv.ch"
 RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
-
 STATE_FILE = "state.json"
 MAX_DETAIL_PAGES = 300
-
-CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "120"))
-LOOP_MINUTES = int(os.getenv("LOOP_MINUTES", "55"))
 
 
 def load_state():
@@ -36,7 +32,6 @@ def load_state():
     if "known_pdfs" not in state:
         state["known_pdfs"] = {}
 
-    # Der digitale Schutzschild: Wenn der Bot neu startet, weiß er, ob er die Vergangenheit schon kennt
     if "baseline_done" not in state:
         state["baseline_done"] = False
 
@@ -53,7 +48,7 @@ def get_page(url, retries=3):
         try:
             response = requests.get(
                 url,
-                timeout=60,
+                timeout=30,
                 headers={
                     "User-Agent": "Mozilla/5.0 Schwingen-Live-Bot/1.0",
                     "Cache-Control": "no-cache",
@@ -62,10 +57,9 @@ def get_page(url, retries=3):
             )
             response.raise_for_status()
             return response.text
-        except requests.exceptions.RequestException as exc:
-            wait_time = attempt * 10
-            print(f"Fehler bei Get-Versuch {attempt}: {exc}. Warte {wait_time}s...")
-            time.sleep(wait_time)
+        except requests.exceptions.RequestException:
+            import time
+            time.sleep(2)
     raise RuntimeError(f"Seite konnte nicht geladen werden: {url}")
 
 
@@ -87,9 +81,7 @@ def clean_text(text):
 def extract_date_from_text(text):
     text = clean_text(text)
     match = re.search(r"\d{2}\.\d{2}\.?\d{4}", text)
-    if not match:
-        return ""
-    return match.group(0).replace("..", ".")
+    return match.group(0).replace("..", ".") if match else ""
 
 
 def parse_date(date_text):
@@ -110,9 +102,13 @@ def get_anlass_id(url):
 
 
 def collect_active_fests():
-    soup = get_soup(RANGLISTEN_URL)
-    grouped = {}
+    try:
+        soup = get_soup(RANGLISTEN_URL)
+    except Exception as e:
+        print(f"Fehler Übersicht: {e}")
+        return []
 
+    grouped = {}
     for link in soup.find_all("a", href=True):
         href = link["href"]
         full_url = normalise_url(href)
@@ -145,9 +141,8 @@ def collect_active_fests():
         entries.append({
             "anlass_id": anlass_id,
             "detail_url": data["detail_url"],
-            "overview_text": row_text,
-            "date_text": date_text,
             "fest_name": fest_name,
+            "date_text": date_text,
             "location": location,
         })
 
@@ -159,161 +154,127 @@ def collect_active_fests():
     return filtered[:MAX_DETAIL_PAGES]
 
 
-def extract_number_after(label, text):
-    match = re.search(rf"{re.escape(label)}\s+(\d+)", text, flags=re.IGNORECASE)
-    return match.group(1) if match else ""
-
-
-def extract_fest_website(soup):
-    for link in soup.find_all("a", href=True):
-        href = link["href"].strip()
-        text = clean_text(link.get_text(" ", strip=True))
-        if href.startswith("http") and "arls.esv.ch" not in href and "esv.ch" not in href:
-            return href
-        if text.startswith("http") and "arls.esv.ch" not in text and "esv.ch" not in text:
-            return text
-    return ""
-
-
-def is_real_pdf_url(href):
-    return href.lower().split("?")[0].endswith(".pdf")
-
-
-def is_blocked_pdf(href, link_text=""):
+def get_gang_nummer(href, link_text):
     combined = f"{href} {link_text}".lower()
-    blocked_words = ["zwischenrangliste", "zwischenrang", "startliste", "einteilung", "notizblatt", "paarung"]
-    return any(word in combined for word in blocked_words)
+    gang_match = re.search(r"\b([1-6])\b\.?\s*(gang|g\b)", combined)
+    if gang_match:
+        return int(gang_match.group(1))
+    zahlen = re.findall(r"\b([1-6])\b", combined)
+    return int(zahlen[-1]) if zahlen else 0
 
 
-def is_statistik(href, link_text=""):
+def get_pdf_title(href, link_text, gang_num):
     combined = f"{href} {link_text}".lower()
-    if not is_real_pdf_url(href) or is_blocked_pdf(href, link_text):
-        return False
-    return "statistik" in combined or "-st.pdf" in combined or "_st.pdf" in combined
+    if "schluss" in combined or "-rl" in combined or "rangliste" in combined:
+        return "Schlussrangliste"
+    if gang_num > 0:
+        return f"Statistik (nach dem {gang_num}. Gang)"
+    return "Statistik"
 
 
-def is_schlussrangliste(href, link_text=""):
-    combined = f"{href} {link_text}".lower()
-    if not is_real_pdf_url(href) or is_blocked_pdf(href, link_text):
-        return False
-    return "schlussrangliste" in combined or "schlussrang" in combined or combined.endswith("-rl.pdf") or "_rl.pdf" in combined
-
-
-def should_track_pdf(href, link_text=""):
-    return is_statistik(href, link_text) or is_schlussrangliste(href, link_text)
-
-
-def get_pdf_title(href, link_text=""):
-    text = clean_text(link_text)
-    if is_statistik(href, text):
-        return text if text else "Statistik"
-    if is_schlussrangliste(href, text):
-        return text if text else "Schlussrangliste"
-    return "PDF"
-
-
-def telegram_request_with_retry(url, data, timeout=90, retries=3):
-    for attempt in range(1, retries + 1):
-        try:
-            response = requests.post(url, data=data, timeout=timeout)
-            if response.status_code == 200:
-                return response
-            if response.status_code == 429:
-                retry_after = response.json().get("parameters", {}).get("retry_after", 30)
-                time.sleep(retry_after + 1)
-                continue
-            response.raise_for_status()
-        except requests.exceptions.RequestException as exc:
-            time.sleep(attempt * 5)
-    return None
-
-
-def send_document(pdf_url, caption):
-    telegram_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-    telegram_request_with_retry(
-        url=telegram_url,
-        data={
-            "chat_id": CHAT_ID,
-            "document": pdf_url,
-            "caption": caption[:1024],
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
+def download_pdf(pdf_url):
+    response = requests.get(
+        pdf_url,
+        timeout=30,
+        headers={
+            "User-Agent": "Mozilla/5.0 Schwingen-Live-Bot/1.0",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
         },
     )
+    response.raise_for_status()
+    return response.content
 
 
-def build_pdf_caption(pdf_title, fest, detail_infos):
-    schwinger = detail_infos.get("schwinger", "")
-    website = detail_infos.get("website", "")
-    lines = [
-        f"📅 Datum: {escape(fest.get('date_text', '-'))}",
-        f"🏟 Fest: {escape(fest.get('fest_name', '-'))}",
-        f"📍 Ort: {escape(fest.get('location', '-'))}",
-        f"🤼 Anzahl Schwinger: {escape(schwinger) if schwinger else '-'}",
-        f"🌐 Webseite Fest: {escape(website) if website else '-'}",
-        f"📄 Dokument: {escape(pdf_title)}",
-    ]
-    return "\n".join(lines)
+def send_document(pdf_bytes, filename, caption):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
+    data = {
+        "chat_id": CHAT_ID,
+        "caption": caption[:1024],
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    files = {"document": (filename, BytesIO(pdf_bytes), "application/pdf")}
+    requests.post(url, data=data, files=files, timeout=60).raise_for_status()
 
 
 def process_fest(fest, state):
-    soup = get_soup(fest["detail_url"])
-    
+    try:
+        soup = get_soup(fest["detail_url"])
+    except Exception:
+        return
+
     page_text = clean_text(soup.get_text(" ", strip=True))
-    schwinger = extract_number_after("Anzahl Schwinger", page_text)
-    website = extract_fest_website(soup)
-    detail_infos = {"schwinger": schwinger, "website": website}
+    schwinger = re.search(r"Anzahl Schwinger\s+(\d+)", page_text, flags=re.IGNORECASE)
+    schwinger_txt = schwinger.group(1) if schwinger else ""
+
+    # Fest-Webseite suchen
+    website = ""
+    for link in soup.find_all("a", href=True):
+        href = link["href"].strip()
+        if href.startswith("http") and "esv.ch" not in href:
+            website = href
+            break
 
     for link in soup.find_all("a", href=True):
         href = link["href"]
         link_text = clean_text(link.get_text(" ", strip=True))
+        combined_meta = f"{href} {link_text}".lower()
 
-        if not should_track_pdf(href, link_text):
+        if not href.lower().split("?")[0].endswith(".pdf"):
+            continue
+
+        # Rigoroser Filter gegen Zwischenranglisten
+        if any(w in combined_meta for w in ["zwischen", "startliste", "einteilung", "notizblatt", "paarung"]):
+            continue
+
+        is_stat = "statistik" in combined_meta or "st_" in combined_meta or "st." in combined_meta
+        is_rl = "schluss" in combined_meta or "rangliste" in combined_meta or "-rl" in combined_meta
+
+        if not (is_stat or is_rl):
             continue
 
         pdf_url = normalise_url(href)
-        pdf_title = get_pdf_title(href, link_text)
-        
-        # Sendersicherer Speicher-Schlüssel aus Anlass-ID und PDF-Name
         filename = pdf_url.split("/")[-1].split("?")[0]
         storage_key = f"{fest['anlass_id']}_{filename}"
 
         if storage_key in state["known_pdfs"]:
             continue
 
-        # Als bekannt markieren
+        try:
+            pdf_content = download_pdf(pdf_url)
+            pdf_hash = hashlib.sha256(pdf_content).hexdigest()
+        except Exception:
+            continue
+
         state["known_pdfs"][storage_key] = {
-            "title": pdf_title,
+            "hash": pdf_hash,
+            "filename": filename,
             "fest": fest.get("fest_name", ""),
-            "date": fest.get("date_text", ""),
         }
         save_state(state)
 
-        # 🛑 DIE ENTSCHEIDENDE BARRIERE: 
-        # Nur wenn im vorherigen Lauf alle alten PDFs weggespeichert wurden, wird JETZT echt gesendet!
+        # Baseline-Check: Verhindert jeglichen vergangenheits-Spam
         if state["baseline_done"]:
-            print(f"Echtzeit-Neuheit erkannt: {pdf_url}")
-            caption = build_pdf_caption(pdf_title, fest, detail_infos)
-            send_document(pdf_url, caption)
+            gang = get_gang_nummer(href, link_text)
+            doc_title = get_pdf_title(href, link_text, gang)
+            emoji = "🏆" if "Schluss" in doc_title else "📊"
+
+            caption = (
+                f"🏟 <b>{escape(fest['fest_name'])}</b>\n"
+                f"📅 Datum: {escape(fest['date_text'])}\n"
+                f"📍 Ort: {escape(fest['location'])}\n"
+            )
+            if schwinger_txt:
+                caption += f"🤼 Anzahl Schwinger: {escape(schwinger_txt)}\n"
+            if website:
+                caption += f"🌐 <a href='{escape(website)}'>Fest-Webseite</a>\n"
+            caption += f"📝 <b>{emoji} {doc_title}</b>"
+
+            print(f"SENDE LIVE-UPDATE: {filename}")
+            send_document(pdf_content, filename, caption)
         else:
-            print(f"VERGANGENHEIT GEBLOCKT (Stumm gespeichert): {filename}")
-
-
-def check_ranglisten(state):
-    print(f"Prüfung gestartet: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
-    fests = collect_active_fests()
-
-    for fest in fests:
-        try:
-            process_fest(fest, state)
-        except Exception as exc:
-            print(f"Fehler bei {fest['detail_url']}: {exc}")
-
-    # Wenn der allererste Durchlauf fertig ist, schalten wir die Live-Leitung frei
-    if not state["baseline_done"]:
-        state["baseline_done"] = True
-        save_state(state)
-        print("--- VERGANGENHEIT ERFOLGREICH IMPORTIERT. AB JETZT WIRD LIVE GESENDET! ---")
+            print(f"Baseline blockiert alten Stand: {filename}")
 
 
 def main():
@@ -321,14 +282,17 @@ def main():
         raise ValueError("BOT_TOKEN oder CHAT_ID fehlt.")
 
     state = load_state()
-    end_time = time.time() + (LOOP_MINUTES * 60)
+    fests = collect_active_fests()
 
-    while time.time() < end_time:
-        check_ranglisten(state)
-        remaining_seconds = int(end_time - time.time())
-        if remaining_seconds <= CHECK_INTERVAL_SECONDS:
-            break
-        time.sleep(CHECK_INTERVAL_SECONDS)
+    for fest in fests:
+        process_fest(fest, state)
+
+    if not state["baseline_done"]:
+        state["baseline_done"] = True
+        save_state(state)
+        print("Baseline fixiert. Ab dem nächsten automatischen Lauf wird live gesendet.")
+
+    print("Bot-Scan erfolgreich beendet.")
 
 
 if __name__ == "__main__":
