@@ -15,8 +15,8 @@ from bs4 import BeautifulSoup
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-BASE_URL = "https://esv.ch"
-RANGLISTEN_URL = "https://esv.ch/ranglisten/"
+BASE_URL = "https://arls.esv.ch"
+RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
 STATE_FILE = "state.json"
 MAX_DETAIL_PAGES = 300
 
@@ -65,17 +65,10 @@ def normalise_url(url):
 def get_page(url, retries=3):
     for attempt in range(1, retries + 1):
         try:
-            response = requests.get(
-                url,
-                headers=HEADERS,
-                timeout=60,
-            )
-
+            response = requests.get(url, headers=HEADERS, timeout=60)
             print(f"GET Versuch {attempt}: {url} -> {response.status_code}")
-
             response.raise_for_status()
             return response.text
-
         except requests.exceptions.RequestException as exc:
             print(f"GET Fehler Versuch {attempt}: {exc}")
             time.sleep(attempt * 3)
@@ -89,11 +82,7 @@ def get_soup(url):
 
 def extract_date(text):
     match = re.search(r"\d{2}\.\d{2}\.?\d{4}", clean_text(text))
-
-    if not match:
-        return ""
-
-    return match.group(0).replace("..", ".")
+    return match.group(0).replace("..", ".") if match else ""
 
 
 def parse_date(date_text):
@@ -104,24 +93,15 @@ def get_anlass_id(url):
     parsed = urlparse(url)
     query = parse_qs(parsed.query)
     values = query.get("anlass", [])
-
     return values[0] if values else ""
 
 
 def is_jung_or_nachwuchs(text):
     text = text.lower()
-
     blocked_words = [
-        "jung",
-        "nachwuchs",
-        "bueb",
-        "bube",
-        "buben",
-        "schüler",
-        "schueler",
-        "knaben",
+        "jung", "nachwuchs", "bueb", "bube", "buben",
+        "schüler", "schueler", "knaben",
     ]
-
     return any(word in text for word in blocked_words)
 
 
@@ -184,14 +164,10 @@ def collect_active_fests():
         print("Keine Aktiv-Feste gefunden.")
         return []
 
-    newest_date = max(
-        entries,
-        key=lambda entry: parse_date(entry["date_text"])
-    )["date_text"]
+    newest_date = max(entries, key=lambda entry: parse_date(entry["date_text"]))["date_text"]
 
     filtered = [
-        entry
-        for entry in entries
+        entry for entry in entries
         if entry["date_text"] == newest_date
     ]
 
@@ -201,11 +177,8 @@ def collect_active_fests():
 
     for fest in filtered:
         print(
-            f"Fest gefunden: "
-            f"{fest['fest_name']} / "
-            f"{fest['date_text']} / "
-            f"{fest['location']} / "
-            f"{fest['detail_url']}"
+            f"Fest gefunden: {fest['fest_name']} / "
+            f"{fest['date_text']} / {fest['location']} / {fest['detail_url']}"
         )
 
     return filtered[:MAX_DETAIL_PAGES]
@@ -215,11 +188,7 @@ def extract_fest_infos(soup):
     page_text = clean_text(soup.get_text(" ", strip=True))
 
     schwinger = ""
-    match = re.search(
-        r"Anzahl Schwinger\s+(\d+)",
-        page_text,
-        flags=re.IGNORECASE,
-    )
+    match = re.search(r"Anzahl Schwinger\s+(\d+)", page_text, flags=re.IGNORECASE)
 
     if match:
         schwinger = match.group(1)
@@ -229,11 +198,7 @@ def extract_fest_infos(soup):
     for link in soup.find_all("a", href=True):
         href = link["href"].strip()
 
-        if (
-            href.startswith("http")
-            and "arls.esv.ch" not in href
-            and "esv.ch" not in href
-        ):
+        if href.startswith("http") and "arls.esv.ch" not in href and "esv.ch" not in href:
             website = href
             break
 
@@ -292,17 +257,14 @@ def get_gang_number(href, link_text):
     combined = f"{href} {link_text}".lower()
 
     match = re.search(r"nach\s+(\d+)\s+gäng", combined)
-
     if match:
         return int(match.group(1))
 
     match = re.search(r"nach\s+einem\s+gang", combined)
-
     if match:
         return 1
 
     match = re.search(r"/zs([1-6])/", combined)
-
     if match:
         return int(match.group(1))
 
@@ -340,22 +302,14 @@ def get_document_title(href, link_text):
 
 
 def download_pdf(pdf_url):
-    response = requests.get(
-        pdf_url,
-        headers=HEADERS,
-        timeout=90,
-    )
-
+    response = requests.get(pdf_url, headers=HEADERS, timeout=90)
     print(f"PDF Download: {pdf_url} -> {response.status_code}")
-
     response.raise_for_status()
     return response.content
 
 
 def send_document(pdf_bytes, filename, caption):
-    telegram_url = (
-        f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-    )
+    telegram_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
 
     data = {
         "chat_id": CHAT_ID,
@@ -365,11 +319,7 @@ def send_document(pdf_bytes, filename, caption):
     }
 
     files = {
-        "document": (
-            filename,
-            BytesIO(pdf_bytes),
-            "application/pdf",
-        )
+        "document": (filename, BytesIO(pdf_bytes), "application/pdf")
     }
 
     response = requests.post(
@@ -401,67 +351,53 @@ def build_caption(fest, document_title, infos):
 
 def process_pdf(pdf_url, document_title, fest, infos, state):
     filename = pdf_url.split("/")[-1].split("?")[0]
-
-    # WICHTIG: PDF-URL als eindeutiger Key
     storage_key = pdf_url
 
     if storage_key in state["known_pdfs"]:
-        print(f"Bereits bekannt: {filename}")
+        print(f"Bereits bekannt, wird nicht gesendet: {filename}")
         return
 
     try:
         pdf_content = download_pdf(pdf_url)
         pdf_hash = hashlib.sha256(pdf_content).hexdigest()
-
     except Exception as exc:
-        print(f"PDF Fehler: {pdf_url} / {exc}")
+        print(f"PDF konnte nicht geladen werden: {pdf_url} / {exc}")
         return
 
     state["known_pdfs"][storage_key] = {
         "hash": pdf_hash,
+        "url": pdf_url,
+        "filename": filename,
+        "title": document_title,
         "fest": fest.get("fest_name", ""),
         "date": fest.get("date_text", ""),
+        "location": fest.get("location", ""),
     }
 
     save_state(state)
 
     if not state["baseline_done"]:
-        print(f"Baseline blockiert alten Stand: {filename}")
+        print(f"Baseline speichert bestehende PDF ohne Senden: {filename}")
         return
 
-    caption = build_caption(
-        fest,
-        document_title,
-        infos,
-    )
+    caption = build_caption(fest, document_title, infos)
 
-    print(f"SENDE LIVE-UPDATE: {filename}")
-
-    send_document(
-        pdf_content,
-        filename,
-        caption,
-    )
+    print(f"Sende neue PDF: {filename}")
+    send_document(pdf_content, filename, caption)
 
 
 def process_fest(fest, state):
     try:
         soup = get_soup(fest["detail_url"])
-
     except Exception as exc:
-        print(
-            f"Fest konnte nicht geöffnet werden: "
-            f"{fest['detail_url']} / {exc}"
-        )
+        print(f"Fest konnte nicht geöffnet werden: {fest['detail_url']} / {exc}")
         return
 
     infos = extract_fest_infos(soup)
 
     print(
-        f"Aktiv-Fest scannen: "
-        f"{fest['fest_name']} / "
-        f"{fest['date_text']} / "
-        f"{fest['location']} / "
+        f"Aktiv-Fest scannen: {fest['fest_name']} / "
+        f"{fest['date_text']} / {fest['location']} / "
         f"Schwinger: {infos.get('schwinger', '-')} / "
         f"Website: {infos.get('website', '-')}"
     )
@@ -470,19 +406,13 @@ def process_fest(fest, state):
 
     for link in soup.find_all("a", href=True):
         href = link["href"]
-        link_text = clean_text(
-            link.get_text(" ", strip=True)
-        )
+        link_text = clean_text(link.get_text(" ", strip=True))
 
         if not should_send_document(href, link_text):
             continue
 
         pdf_url = normalise_url(href)
-
-        document_title = get_document_title(
-            href,
-            link_text,
-        )
+        document_title = get_document_title(href, link_text)
 
         process_pdf(
             pdf_url=pdf_url,
@@ -500,29 +430,17 @@ def process_fest(fest, state):
 
 def main():
     if not BOT_TOKEN or not CHAT_ID:
-        raise ValueError(
-            "BOT_TOKEN oder CHAT_ID fehlt."
-        )
+        raise ValueError("BOT_TOKEN oder CHAT_ID fehlt.")
 
     state = load_state()
 
-    print(
-        "Starte Bot: Aktiv-Feste scannen, "
-        "nur Statistik und Schlussrangliste."
-    )
-
-    print(
-        f"Prüfung gestartet: "
-        f"{datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
-    )
+    print("Starte Bot: Aktiv-Feste scannen, nur Statistik und Schlussrangliste.")
+    print(f"Prüfung gestartet: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
 
     fests = collect_active_fests()
 
     if not state["baseline_done"]:
-        print(
-            "SICHERHEITS-BASELINE: "
-            "Bestehende PDFs werden gespeichert, NICHT gesendet."
-        )
+        print("SICHERHEITS-BASELINE: Bestehende PDFs werden gespeichert, NICHT gesendet.")
 
     for fest in fests:
         process_fest(fest, state)
@@ -530,11 +448,7 @@ def main():
     if not state["baseline_done"]:
         state["baseline_done"] = True
         save_state(state)
-
-        print(
-            "Baseline fertig. "
-            "Ab jetzt werden nur neue PDFs gesendet."
-        )
+        print("Baseline fertig. Ab jetzt werden nur neue PDFs gesendet.")
 
     print("Bot-Scan erfolgreich beendet.")
 
