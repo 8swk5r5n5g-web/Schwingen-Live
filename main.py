@@ -60,11 +60,6 @@ def normalise_url(url):
 def clean_text(text):
     return " ".join(text.replace("\xa0", " ").replace(" .", ".").replace(". ", ".").split()).strip()
 
-def extract_date_from_text(text):
-    text = clean_text(text)
-    match = re.search(r"\d{2}\.\d{2}\.?\d{4}", text)
-    return match.group(0).replace("..", ".") if match else ""
-
 def is_jung_or_nachwuchs(text):
     text = text.lower()
     blocked_words = ["jung", "nachwuchs", "bueb", "bube", "buben", "schüler", "schueler", "knaben"]
@@ -108,7 +103,6 @@ def collect_active_fests():
         category = clean_text(parts[2]).lower()
         row_text = clean_text(" ".join(parts))
 
-        # 🛑 DATUMS-FILTER GELÖSCHT: Jedes aktive Fest wird jetzt kompromisslos gescannt!
         if category != "aktiv" or is_jung_or_nachwuchs(row_text):
             continue
 
@@ -143,7 +137,8 @@ def get_pdf_title(href, link_text, gang_num):
 
 def send_telegram_document(pdf_bytes, filename, caption, reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-    data = {"chat_id": CHID := CHAT_ID, "caption": caption[:1024], "parse_mode": "HTML"}
+    # FEHLER BEHOBEN: Hier wird die CHAT_ID jetzt wieder ganz normal übergeben
+    data = {"chat_id": CHAT_ID, "caption": caption[:1024], "parse_mode": "HTML"}
     if reply_markup:
         data["reply_markup"] = json.dumps(reply_markup)
     files = {"document": (filename, BytesIO(pdf_bytes), "application/pdf")}
@@ -191,7 +186,6 @@ def process_fest(fest, state):
         filename = pdf_url.split("/")[-1].split("?")[0]
         storage_key = f"{fest['anlass_id']}_{filename}"
 
-        # Erkennt sofort, ob dieses PDF bereits in der state.json auf GitHub liegt
         if storage_key in state["known_pdfs"]:
             continue
 
