@@ -108,6 +108,7 @@ def collect_active_fests():
         category = clean_text(parts[2]).lower()
         row_text = clean_text(" ".join(parts))
 
+        # 🛑 DATUMS-FILTER GELÖSCHT: Jedes aktive Fest wird jetzt kompromisslos gescannt!
         if category != "aktiv" or is_jung_or_nachwuchs(row_text):
             continue
 
@@ -142,7 +143,7 @@ def get_pdf_title(href, link_text, gang_num):
 
 def send_telegram_document(pdf_bytes, filename, caption, reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-    data = {"chat_id": CHAT_ID, "caption": caption[:1024], "parse_mode": "HTML"}
+    data = {"chat_id": CHID := CHAT_ID, "caption": caption[:1024], "parse_mode": "HTML"}
     if reply_markup:
         data["reply_markup"] = json.dumps(reply_markup)
     files = {"document": (filename, BytesIO(pdf_bytes), "application/pdf")}
@@ -151,8 +152,11 @@ def send_telegram_document(pdf_bytes, filename, caption, reply_markup=None):
 def process_fest(fest, state):
     try:
         soup = get_soup(fest["detail_url"])
-    except Exception:
+    except Exception as e:
+        print(f"Fehler beim Laden von {fest['fest_name']}: {e}")
         return
+
+    print(f"Scanne Fest: {fest['fest_name']} (ID: {fest['anlass_id']})")
 
     website = ""
     for link in soup.find_all("a", href=True):
@@ -187,6 +191,7 @@ def process_fest(fest, state):
         filename = pdf_url.split("/")[-1].split("?")[0]
         storage_key = f"{fest['anlass_id']}_{filename}"
 
+        # Erkennt sofort, ob dieses PDF bereits in der state.json auf GitHub liegt
         if storage_key in state["known_pdfs"]:
             continue
 
@@ -195,7 +200,6 @@ def process_fest(fest, state):
             res.raise_for_status()
             pdf_bytes = res.content
             
-            # WICHTIG: Sofort im Speicher ablegen
             state["known_pdfs"][storage_key] = hashlib.md5(pdf_bytes).hexdigest()
             save_state(state)
 
@@ -220,6 +224,8 @@ def main():
 
     state = load_state()
     fests = collect_active_fests()
+
+    print(f"Anzahl gefundener aktiver Feste: {len(fests)}")
 
     for fest in fests:
         process_fest(fest, state)
