@@ -133,10 +133,11 @@ def process_fest(fest, state):
         if not href.lower().split("?")[0].endswith(".pdf"):
             continue
 
-        is_rangliste = "rangliste" in combined_meta or "classement" in combined_meta or "classifica" in combined_meta
-        is_zwischen = "zwischen" in combined_meta
+        # Filter: Statistiken und offizielle Ranglisten rein, Zwischenstände/Einteilungen raus
+        is_allowed = "rangliste" in combined_meta or "statistik" in combined_meta or "classement" in combined_meta or "classifica" in combined_meta
+        is_zwischen = "zwischen" in combined_meta or "startliste" in combined_meta or "einteilung" in combined_meta
 
-        if not is_rangliste or is_zwischen:
+        if not is_allowed or is_zwischen:
             continue
 
         pdf_url = requests.compat.urljoin(BASE_URL, href)
@@ -152,21 +153,24 @@ def process_fest(fest, state):
         except Exception:
             continue
 
-        # 🎯 KORREKTUR: Zuerst prüfen, ob wir im Live-Modus senden dürfen
+        # 🎯 EXAKTER TEXT-ABGLEICH:
+        # doc_title zieht stur den Linktext von der Webseite (z.B. "Statistik nach einem Gang")
+        doc_title = link_text if link_text else "Rangliste"
+        emoji = "🏆" if "schluss" in doc_title.lower() else "📊"
+
         if state["baseline_done"]:
             caption = (
                 f"🏟 <b>{escape(fest['fest_name'])}</b>\n"
-                f"🏆 <b>Offizielle Festrangliste verfügbar!</b>\n"
+                f"{emoji} <b>{escape(doc_title)}</b>\n"
             )
             if schwinger_txt:
                 caption += f"🤼 {escape(schwinger_txt)} Aktivschwinger\n"
 
-            print(f"SENDE RANGLISTE: {filename}")
+            print(f"SENDE DOKUMENT: {filename} -> {doc_title}")
             send_telegram_document(pdf_bytes, filename, caption)
         else:
-            print(f"Baseline speichert bestehende Rangliste lautlos: {filename}")
+            print(f"Baseline speichert bestehende Liste lautlos: {filename}")
 
-        # Erst NACHDEM entschieden wurde, ob gesendet wird, im Speicher registrieren
         state["known_pdfs"][storage_key] = hashlib.md5(pdf_bytes).hexdigest()
         save_state(state)
 
