@@ -13,7 +13,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
-BASE_URL = "https://arls.esv.ch"
 STATE_FILE = "state.json"
 
 HEADERS = {
@@ -72,19 +71,23 @@ def collect_today_active_fests():
     grouped = {}
     for link in soup.find_all("a", href=True):
         href = link["href"]
-        full_url = requests.compat.urljoin(BASE_URL, href)
-        if "anlass=" not in full_url:
+        
+        if "anlass=" not in href:
             continue
         
-        anlass_id = parse_qs(urlparse(full_url).query).get("anlass", [""])[0]
+        parsed_url = urlparse(href)
+        queries = parse_qs(parsed_url.query)
+        anlass_id = queries.get("anlass", [""])[0]
+        
         if not anlass_id:
             continue
             
         text = clean_text(link.get_text(" ", strip=True))
         if not text:
             continue
+            
         if anlass_id not in grouped:
-            grouped[anlass_id] = {"detail_url": full_url, "parts": []}
+            grouped[anlass_id] = {"detail_url": f"https://arls.esv.ch/ranglisten/?anlass={anlass_id}", "parts": []}
         grouped[anlass_id]["parts"].append(text)
 
     entries = []
@@ -103,7 +106,7 @@ def collect_today_active_fests():
         if "aktiv" not in row_text.lower() or is_jung_or_nachwuchs(row_text):
             continue
 
-        print(f"Heutiges Aktiv-Fest gefunden: {fest_name} ({date_text})")
+        print(f"Heutiges Aktiv-Fest gefunden: {fest_name} ({date_text}) ID: {anlass_id}")
         entries.append({"anlass_id": anlass_id, "detail_url": data["detail_url"], "fest_name": fest_name})
     
     return entries
@@ -125,31 +128,40 @@ def process_fest(fest, state):
     schwinger_txt = schwinger.group(1) if schwinger else ""
 
     for link in soup.find_all("a", href=True):
-        href = link["href"]
+        href = link["href"].strip()
         link_text = clean_text(link.get_text(" ", strip=True))
         combined_meta = f"{href} {link_text}".lower()
 
         if not href.lower().split("?")[0].endswith(".pdf"):
             continue
 
-        # 🎯 RADIKALER NEGATIV-FILTER:
-        # Wir verbieten NUR NOCH diese 3 Wörter. Alles andere ist erlaubt!
+        # Harter Negativ-Filter für unerwünschte Dokumente
         is_blockiert = "zwischen" in combined_meta or "startliste" in combined_meta or "einteilung" in combined_meta
-
         if is_blockiert:
             continue
 
-        pdf_url = requests.compat.urljoin(BASE_URL, href)
-        filename = pdf_url.split("/")[-1].split("?")[0]
+        # Dateinamen sauber extrahieren
+        filename = href.split("/")[-1].split("?")[0]
         storage_key = f"{fest['anlass_id']}_{filename}"
 
         if storage_key in state["known_pdfs"]:
             continue
 
-        try:
-            res = requests.get(pdf_url, headers=HEADERS, timeout=30)
-            pdf_bytes = res.content
-        except Exception:
+        # 🎯 FIX: Wir versuchen das PDF über beide möglichen Server-URLs zu laden
+        pdf_bytes = None
+        for domain in ["https://esv.ch", "https://arls.esv.ch"]:
+            try:
+                pdf_url = requests.compat.urljoin(domain, href)
+                res = requests.get(pdf_url, headers=HEADERS, timeout=15)
+                if res.status_code == 200 and len(res.content) > 1000: # Muss eine echte Datei sein
+                    pdf_bytes = res.content
+                    break
+            except Exception:
+                continue
+
+        # Wenn die Datei von keinem Server geladen werden konnte, überspringen
+        if not pdf_bytes:
+            print(f"Konnte PDF nicht laden: {filename}")
             continue
 
         doc_title = link_text if link_text else "Dokument"
@@ -163,7 +175,7 @@ def process_fest(fest, state):
             if schwinger_txt:
                 caption += f"🤼 {escape(schwinger_txt)} Aktivschwinger\n"
 
-            print(f"... SENDE: {doc_title}")
+            print(f"... SENDE AN TELEGRAM: {doc_title}")
             send_telegram_document(pdf_bytes, filename, caption)
         else:
             print(f"Baseline speichert lautlos: {doc_title}")
