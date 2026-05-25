@@ -1,21 +1,17 @@
-name: Schwingfest Bot Live Ticker
+name: Schwingfest Bot Ticker
 
 on:
   schedule:
-    - cron: '*/5 * * * 6,0'
+    - cron: '*/5 * * * *' # Läuft alle 5 Minuten rund um die Uhr
   workflow_dispatch:
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      
+    
     steps:
       - name: Code auschecken
         uses: actions/checkout@v4
-        with:
-          persist-credentials: true
 
       - name: Python einrichten
         uses: actions/setup-python@v5
