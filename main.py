@@ -118,50 +118,66 @@ def send_telegram_document(pdf_bytes, filename, caption):
     requests.post(url, data=data, files=files, timeout=60).raise_for_status()
 
 def process_fest(fest, state):
+    print(f"\n--- ÖFFNE DETAILSEITE FÜR FEST: {fest['fest_name']} ({fest['detail_url']}) ---")
     try:
         soup = get_soup(fest["detail_url"])
-    except Exception:
+    except Exception as e:
+        print(f"Fehler beim Laden der Detailseite: {e}")
         return
 
     page_text = clean_text(soup.get_text(" ", strip=True))
     schwinger = re.search(r"Anzahl Schwinger\s+(\d+)", page_text, flags=re.IGNORECASE)
     schwinger_txt = schwinger.group(1) if schwinger else ""
 
-    for link in soup.find_all("a", href=True):
+    all_links = soup.find_all("a", href=True)
+    print(f"Anzahl gefundener Links insgesamt auf dieser Seite: {len(all_links)}")
+
+    pdf_found_count = 0
+    for link in all_links:
         href = link["href"].strip()
         link_text = clean_text(link.get_text(" ", strip=True))
         combined_meta = f"{href} {link_text}".lower()
 
+        # Debug-Anzeige für jeden PDF-Link, den er findet
+        if ".pdf" in href.lower():
+            print(f"[PDF Gefunden] Link-Text: '{link_text}' | URL: '{href}'")
+
         if not href.lower().split("?")[0].endswith(".pdf"):
             continue
 
-        # Harter Negativ-Filter für unerwünschte Dokumente
         is_blockiert = "zwischen" in combined_meta or "startliste" in combined_meta or "einteilung" in combined_meta
         if is_blockiert:
+            print(f"   -> Übersprungen: Blockiertes Wort gefunden in '{combined_meta}'")
             continue
 
-        # Dateinamen sauber extrahieren
+        pdf_found_count += 1
         filename = href.split("/")[-1].split("?")[0]
         storage_key = f"{fest['anlass_id']}_{filename}"
 
         if storage_key in state["known_pdfs"]:
+            print(f"   -> Übersprungen: Bereits gesendet ({filename})")
             continue
 
-        # 🎯 FIX: Wir versuchen das PDF über beide möglichen Server-URLs zu laden
         pdf_bytes = None
-        for domain in ["https://esv.ch", "https://arls.esv.ch"]:
+        # Wir testen systematisch die relativen und absoluten Pfade durch
+        domains_to_test = ["https://esv.ch", "https://arls.esv.ch"]
+        
+        # Falls der Link schon komplett ist (mit https), testen wir ihn direkt
+        if href.startswith("http"):
+            domains_to_test = [""]
+
+        for domain in domains_to_test:
             try:
-                pdf_url = requests.compat.urljoin(domain, href)
+                pdf_url = requests.compat.urljoin(domain, href) if domain else href
                 res = requests.get(pdf_url, headers=HEADERS, timeout=15)
-                if res.status_code == 200 and len(res.content) > 1000: # Muss eine echte Datei sein
+                if res.status_code == 200 and len(res.content) > 1000:
                     pdf_bytes = res.content
                     break
             except Exception:
                 continue
 
-        # Wenn die Datei von keinem Server geladen werden konnte, überspringen
         if not pdf_bytes:
-            print(f"Konnte PDF nicht laden: {filename}")
+            print(f"   -> FEHLER: PDF konnte von keinem Server geladen werden: {filename}")
             continue
 
         doc_title = link_text if link_text else "Dokument"
@@ -175,13 +191,15 @@ def process_fest(fest, state):
             if schwinger_txt:
                 caption += f"🤼 {escape(schwinger_txt)} Aktivschwinger\n"
 
-            print(f"... SENDE AN TELEGRAM: {doc_title}")
+            print(f"   -> !!! SENDE AN TELEGRAM !!!: {doc_title}")
             send_telegram_document(pdf_bytes, filename, caption)
         else:
-            print(f"Baseline speichert lautlos: {doc_title}")
+            print(f"   -> Baseline speichert lautlos: {doc_title}")
 
         state["known_pdfs"][storage_key] = hashlib.md5(pdf_bytes).hexdigest()
         save_state(state)
+
+    print(f"--- FERTIG: ID {fest['anlass_id']} verarbeitet. Erlaubte PDFs übermittelt: {pdf_found_count} ---\n")
 
 def main():
     if not BOT_TOKEN or not CHAT_ID:
