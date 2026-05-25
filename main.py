@@ -90,18 +90,17 @@ def collect_today_active_fests():
     entries = []
     for anlass_id, data in grouped.items():
         parts = data["parts"]
-        if len(parts) < 5:
+        if len(parts) < 3:
             continue
             
         date_text = extract_date_from_text(parts[0])
         fest_name = clean_text(parts[1])
-        category = clean_text(parts[2]).lower()
         row_text = clean_text(" ".join(parts))
 
         if date_text != heute_str:
             continue
 
-        if category != "aktiv" or is_jung_or_nachwuchs(row_text):
+        if "aktiv" not in row_text.lower() or is_jung_or_nachwuchs(row_text):
             continue
 
         print(f"Heutiges Aktiv-Fest gefunden: {fest_name} ({date_text})")
@@ -133,18 +132,11 @@ def process_fest(fest, state):
         if not href.lower().split("?")[0].endswith(".pdf"):
             continue
 
-        # 🎯 DER UNFEHLBARE FILTER:
-        # Wenn irgendwo das Wort "statistik" drin steht, lassen wir es SOFORT durch!
-        if "statistik" in combined_meta:
-            is_allowed = True
-        else:
-            # Nur wenn es KEINE Statistik ist, prüfen wir auf Ranglisten und blockieren Zwischenstände
-            is_allowed = "rangliste" in combined_meta or "classement" in combined_meta or "classifica" in combined_meta
-            is_zwischen = "zwischen" in combined_meta or "startliste" in combined_meta or "einteilung" in combined_meta
-            if is_zwischen:
-                is_allowed = False
+        # 🎯 RADIKALER NEGATIV-FILTER:
+        # Wir verbieten NUR NOCH diese 3 Wörter. Alles andere ist erlaubt!
+        is_blockiert = "zwischen" in combined_meta or "startliste" in combined_meta or "einteilung" in combined_meta
 
-        if not is_allowed:
+        if is_blockiert:
             continue
 
         pdf_url = requests.compat.urljoin(BASE_URL, href)
@@ -160,8 +152,7 @@ def process_fest(fest, state):
         except Exception:
             continue
 
-        # Exakter Text von der Webseite wird eins zu eins übernommen
-        doc_title = link_text if link_text else "Rangliste"
+        doc_title = link_text if link_text else "Dokument"
         emoji = "🏆" if "schluss" in doc_title.lower() else "📊"
 
         if state["baseline_done"]:
@@ -172,10 +163,10 @@ def process_fest(fest, state):
             if schwinger_txt:
                 caption += f"🤼 {escape(schwinger_txt)} Aktivschwinger\n"
 
-            print(f"SENDE DOKUMENT: {filename} -> {doc_title}")
+            print(f"... SENDE: {doc_title}")
             send_telegram_document(pdf_bytes, filename, caption)
         else:
-            print(f"Baseline speichert bestehende Liste lautlos: {filename}")
+            print(f"Baseline speichert lautlos: {doc_title}")
 
         state["known_pdfs"][storage_key] = hashlib.md5(pdf_bytes).hexdigest()
         save_state(state)
