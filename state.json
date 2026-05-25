@@ -1,4 +1,20 @@
 {
-  "known_pdfs": {},
+  "known_pdfs": {
+    "6508_documents/ranglisten/zs1/2026-05-25_106_Luzerner_Kantonales_Schwingfest-ST.pdf": "31ab38248ae3d12a91e4fdbd43be3e90",
+    "6508_documents/ranglisten/zs2/2026-05-25_106_Luzerner_Kantonales_Schwingfest-ST.pdf": "90449048032c6f6ec4ae5420a56252ae",
+    "6508_documents/ranglisten/zs3/2026-05-25_106_Luzerner_Kantonales_Schwingfest-ST.pdf": "d8771f7aacfce28e91b28762fce3ea0d",
+    "6508_documents/ranglisten/zs4/2026-05-25_106_Luzerner_Kantonales_Schwingfest-ST.pdf": "49f8519c1cd70e27a5b6c60c4269424a",
+    "5203_documents/ranglisten/zs1/2026-05-25_Glarner-Buendner_Kantonalschwingfest-ST.pdf": "8740688975653002b4d0ca3050ea0f37",
+    "5203_documents/ranglisten/zs2/2026-05-25_Glarner-Buendner_Kantonalschwingfest-ST.pdf": "7798e56c7f73d8619a64e933520e23f0",
+    "5203_documents/ranglisten/zs3/2026-05-25_Glarner-Buendner_Kantonalschwingfest-ST.pdf": "ef066848ea63dc1611881a80a45e67c7",
+    "5203_documents/ranglisten/zs4/2026-05-25_Glarner-Buendner_Kantonalschwingfest-ST.pdf": "469bb5b54c7fd52ecd73d1beac13d77e",
+    "5203_documents/ranglisten/zs5/2026-05-25_Glarner-Buendner_Kantonalschwingfest-ST.pdf": "5134f5646ca2ff1eca0e78aa524f6356",
+    "4522_documents/ranglisten/zs1/2026-05-25_Unterland-Schwinget-ST.pdf": "293e4bd009fe14ec625f5af8a9d0a396",
+    "4522_documents/ranglisten/zs2/2026-05-25_Unterland-Schwinget-ST.pdf": "1ae473d848ee6dbe1201e6931bb35455",
+    "7312_documents/ranglisten/zs1/2026-05-25_Klubschwinget_Schwingklub_Interlaken-ST.pdf": "e50118794d47343031ef5a41eb4318bd",
+    "7312_documents/ranglisten/zs2/2026-05-25_Klubschwinget_Schwingklub_Interlaken-ST.pdf": "28f7a4829424baf1341ab0a4327960b6",
+    "7312_documents/ranglisten/zs3/2026-05-25_Klubschwinget_Schwingklub_Interlaken-ST.pdf": "6645d95b975c86b3ac10ce5e7d8523a2",
+    "7312_documents/ranglisten/zs4/2026-05-25_Klubschwinget_Schwingklub_Interlaken-ST.pdf": "0eba65455922bdf79b330176ee383fa3"
+  },
   "baseline_done": true
 }
