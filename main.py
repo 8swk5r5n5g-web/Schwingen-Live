@@ -11,15 +11,22 @@ from bs4 import BeautifulSoup
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# 🎯 DIE NEUE, SAUBERE HAUPTSEITE
 TARGET_URL = "https://esv.ch/ranglisten/"
 BASE_URL = "https://arls.esv.ch"
 STATE_FILE = "state.json"
 
+# 🔥 OPTIMIERTE HEADERS: Täuscht einen echten Browser vor, um den 403-Fehler zu umgehen
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1"
 }
 
 def load_state():
@@ -67,11 +74,9 @@ def collect_live_fests(state):
 
     entries = []
     
-    # Die neue Seite listet Feste meistens in Tabellenzeilen (tr) oder Listen-Blöcken auf
     for row in soup.find_all(["tr", "div", "li"]):
         row_text = clean_text(row.get_text(" ", strip=True))
         
-        # 🎯 BEDINGUNG B: FILTER NACH "AKTIV" (Nachwuchs fliegt sofort raus)
         if "aktiv" not in row_text.lower() or is_jung_or_nachwuchs(row_text):
             continue
             
@@ -82,19 +87,15 @@ def collect_live_fests(state):
         href = link_tag["href"].strip()
         fest_name = clean_text(link_tag.get_text(" ", strip=True))
         
-        # Anlass ID extrahieren
         anlass_id = ""
         if "anlass=" in href:
             anlass_id = parse_qs(urlparse(href).query).get("anlass", [""])[0]
         else:
-            # Falls der Link keine ID hat, nutzen wir einen Hash des Namens als ID
             anlass_id = hashlib.md5(fest_name.encode("utf-8")).hexdigest()[:8]
 
-        # 🛑 ABSOLUTER SCHUTZ: Bereits beendete Feste ignorieren
         if anlass_id in state["abgeschlossene_feste"]:
             continue
 
-        # Externe Links erkennen (Regionalverbände wie isv.ch, bksv.ch etc.)
         is_external = not ("esv.ch" in href or href.startswith("/"))
 
         entries.append({
@@ -104,7 +105,6 @@ def collect_live_fests(state):
             "is_external": is_external
         })
         
-    # Duplikate filtern
     seen = set()
     unique_entries = []
     for e in entries:
@@ -139,7 +139,6 @@ def send_telegram_document(pdf_bytes, filename, caption, reply_markup=None):
     requests.post(url, data=data, files=files, timeout=60).raise_for_status()
 
 def process_fest(fest, state):
-    # Wenn es ein externer Link ist, rufen wir ihn nicht auf, bieten aber den Button an
     if fest["is_external"]:
         print(f"Externes Fest erkannt (wird verlinkt): {fest['fest_name']}")
         return
@@ -171,7 +170,6 @@ def process_fest(fest, state):
         if not href.lower().split("?")[0].endswith(".pdf"):
             continue
 
-        # 🛑 HÄRTESTER FILTER GEGEN ZWISCHENRANGLISTEN & STARTLISTEN
         if any(w in combined_meta for w in ["zwischen", "startliste", "einteilung", "notizblatt", "paarung"]):
             continue
 
@@ -202,11 +200,9 @@ def process_fest(fest, state):
         except Exception:
             continue
 
-        # Speichern in der state.json
         state["known_pdfs"][storage_key] = hashlib.md5(pdf_bytes).hexdigest()
         save_state(state)
 
-        # 🎯 CONDITION C: Nur senden, wenn die Baseline (Vergangenheit) fixiert ist
         if state["baseline_done"]:
             emoji = "🏆" if "Schluss" in doc_title else "📊"
             caption = f"🏟 <b>{escape(fest['fest_name'])}</b>\n"
@@ -224,7 +220,6 @@ def process_fest(fest, state):
         else:
             print(f"Baseline blockiert vergangenheits-PDF stumm: {filename}")
 
-    # 🏁 WENN SCHLUSSRANGLISTE UND FINALE STATISTIK GELESEN SIND -> ABSCHLIESSEN
     if hat_schlussrangliste and hat_finale_statistik:
         print(f"🏆 Fest {fest['fest_name']} ist komplett fertig. Wird für immer archiviert.")
         state["abgeschlossene_feste"][fest["anlass_id"]] = True
@@ -242,7 +237,6 @@ def main():
     for fest in fests:
         process_fest(fest, state)
 
-    # Nach dem allerersten Durchlauf die Live-Leitung freischalten
     if not state["baseline_done"]:
         state["baseline_done"] = True
         save_state(state)
