@@ -2,17 +2,20 @@ name: Schwingfest Bot Ticker
 
 on:
   schedule:
-    # GitHub startet den Bot automatisch alle 10 bis 15 Minuten (je nach Serverlast)
     - cron: '*/10 * * * *'
-  workflow_dispatch: # Ermöglicht dir weiterhin den manuellen Start, falls gewünscht
+  workflow_dispatch:
 
 jobs:
   run-bot-smart-interval:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # 📜 Gibt dem Bot explizit die Erlaubnis, Dateien zu speichern!
     
     steps:
       - name: Code auschecken
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true
 
       - name: Python einrichten
         uses: actions/setup-python@v5
@@ -27,30 +30,25 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          # Durchlauf 1: Sofort beim Start prüfen
           echo "=== Start Durchlauf 1 ==="
           python main.py
           
-          # Zustand sofort sichern
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           if [ -f state.json ] && ! git diff --exit-code state.json; then
             git add state.json
             git commit -m "Zustand aktualisiert (Lauf 1) [skip ci]"
-            git push origin main || echo "Push fehlgeschlagen"
+            git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" main || echo "Push fehlgeschlagen"
           fi
 
-          # Exakt 5 Minuten (300 Sekunden) warten
           echo "Warte 5 Minuten bis zum nächsten automatischen Scan..."
           sleep 300
 
-          # Durchlauf 2: Nach 5 Minuten nochmals prüfen
           echo "=== Start Durchlauf 2 ==="
           python main.py
           
-          # Zustand erneut sichern
           if [ -f state.json ] && ! git diff --exit-code state.json; then
             git add state.json
             git commit -m "Zustand aktualisiert (Lauf 2) [skip ci]"
-            git push origin main || echo "Push fehlgeschlagen"
+            git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" main || echo "Push fehlgeschlagen"
           fi
