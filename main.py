@@ -66,7 +66,6 @@ def collect_today_active_fests():
         print(f"Fehler Übersicht: {e}")
         return []
 
-    # Heutiges Datum ermitteln (z.B. 25.05.2026)
     heute_str = datetime.now().strftime("%d.%m.%Y")
     print(f"Suche Feste für das heutige Datum: {heute_str}")
 
@@ -99,11 +98,9 @@ def collect_today_active_fests():
         category = clean_text(parts[2]).lower()
         row_text = clean_text(" ".join(parts))
 
-        # 🎯 1. KONTROLLE: Nur Feste von HEUTE berücksichtigen
         if date_text != heute_str:
             continue
 
-        # 🎯 2. KONTROLLE: Nur AKTIV-Feste zulassen (Jung/Nachwuchs fliegt raus)
         if category != "aktiv" or is_jung_or_nachwuchs(row_text):
             continue
 
@@ -136,8 +133,6 @@ def process_fest(fest, state):
         if not href.lower().split("?")[0].endswith(".pdf"):
             continue
 
-        # 🎯 UNFEHLBARER RANGLISTEN-FILTER:
-        # Muss "rangliste" (oder FR/IT) enthalten, darf aber absolut NICHT "zwischen" enthalten!
         is_rangliste = "rangliste" in combined_meta or "classement" in combined_meta or "classifica" in combined_meta
         is_zwischen = "zwischen" in combined_meta
 
@@ -157,11 +152,7 @@ def process_fest(fest, state):
         except Exception:
             continue
 
-        # Im Zustand registrieren
-        state["known_pdfs"][storage_key] = hashlib.md5(pdf_bytes).hexdigest()
-        save_state(state)
-
-        # Baseline-Schutz: Beim allerersten Start des Tages wird nichts Vergangenes gesendet
+        # 🎯 KORREKTUR: Zuerst prüfen, ob wir im Live-Modus senden dürfen
         if state["baseline_done"]:
             caption = (
                 f"🏟 <b>{escape(fest['fest_name'])}</b>\n"
@@ -175,6 +166,10 @@ def process_fest(fest, state):
         else:
             print(f"Baseline speichert bestehende Rangliste lautlos: {filename}")
 
+        # Erst NACHDEM entschieden wurde, ob gesendet wird, im Speicher registrieren
+        state["known_pdfs"][storage_key] = hashlib.md5(pdf_bytes).hexdigest()
+        save_state(state)
+
 def main():
     if not BOT_TOKEN or not CHAT_ID:
         raise ValueError("BOT_TOKEN oder CHAT_ID fehlt.")
@@ -187,7 +182,6 @@ def main():
     for fest in fests:
         process_fest(fest, state)
 
-    # Nach dem ersten Lauf am Morgen die Leitung für Live-Updates freischalten
     if not state["baseline_done"]:
         state["baseline_done"] = True
         save_state(state)
