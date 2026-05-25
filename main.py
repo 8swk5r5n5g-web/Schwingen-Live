@@ -4,6 +4,7 @@ import json
 import hashlib
 from io import BytesIO
 from html import escape
+from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 import requests
 from bs4 import BeautifulSoup
@@ -11,15 +12,12 @@ from bs4 import BeautifulSoup
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# Die erreichbare Datenbankseite ohne 403-Sperren
 RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
 BASE_URL = "https://arls.esv.ch"
 STATE_FILE = "state.json"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
 }
 
 def load_state():
@@ -56,12 +54,21 @@ def is_jung_or_nachwuchs(text):
     blocked_words = ["jung", "nachwuchs", "bueb", "bube", "buben", "schüler", "schueler", "knaben"]
     return any(word in text for word in blocked_words)
 
-def collect_active_fests():
+def extract_date_from_text(text):
+    text = clean_text(text)
+    match = re.search(r"\d{2}\.\d{2}\.?\d{4}", text)
+    return match.group(0).replace("..", ".") if match else ""
+
+def collect_today_active_fests():
     try:
         soup = get_soup(RANGLISTEN_URL)
     except Exception as e:
         print(f"Fehler Übersicht: {e}")
         return []
+
+    # Heutiges Datum ermitteln (z.B. 25.05.2026)
+    heute_str = datetime.now().strftime("%d.%m.%Y")
+    print(f"Suche Feste für das heutige Datum: {heute_str}")
 
     grouped = {}
     for link in soup.find_all("a", href=True):
@@ -86,15 +93,23 @@ def collect_active_fests():
         parts = data["parts"]
         if len(parts) < 5:
             continue
+            
+        date_text = extract_date_from_text(parts[0])
         fest_name = clean_text(parts[1])
         category = clean_text(parts[2]).lower()
         row_text = clean_text(" ".join(parts))
 
-        # Nur Aktiv-Feste berücksichtigen
+        # 🎯 1. KONTROLLE: Nur Feste von HEUTE berücksichtigen
+        if date_text != heute_str:
+            continue
+
+        # 🎯 2. KONTROLLE: Nur AKTIV-Feste zulassen (Jung/Nachwuchs fliegt raus)
         if category != "aktiv" or is_jung_or_nachwuchs(row_text):
             continue
 
+        print(f"Heutiges Aktiv-Fest gefunden: {fest_name} ({date_text})")
         entries.append({"anlass_id": anlass_id, "detail_url": data["detail_url"], "fest_name": fest_name})
+    
     return entries
 
 def send_telegram_document(pdf_bytes, filename, caption):
@@ -118,13 +133,11 @@ def process_fest(fest, state):
         link_text = clean_text(link.get_text(" ", strip=True))
         combined_meta = f"{href} {link_text}".lower()
 
-        # Es muss zwingend eine PDF-Datei sein
         if not href.lower().split("?")[0].endswith(".pdf"):
             continue
 
-        # 🎯 MESSERSCHARFE LOGIK NACH DEINEM SCREENSHOT:
-        # Es MUSS das Wort "rangliste" enthalten sein, aber DARF NICHT "zwischen" enthalten!
-        # Statistiken, Einteilungen und Zwischenranglisten fliegen hier eiskalt raus.
+        # 🎯 UNFEHLBARER RANGLISTEN-FILTER:
+        # Muss "rangliste" (oder FR/IT) enthalten, darf aber absolut NICHT "zwischen" enthalten!
         is_rangliste = "rangliste" in combined_meta or "classement" in combined_meta or "classifica" in combined_meta
         is_zwischen = "zwischen" in combined_meta
 
@@ -144,11 +157,11 @@ def process_fest(fest, state):
         except Exception:
             continue
 
-        # Registrieren in der state.json
+        # Im Zustand registrieren
         state["known_pdfs"][storage_key] = hashlib.md5(pdf_bytes).hexdigest()
         save_state(state)
 
-        # Erst senden, wenn die Baseline (Vergangenheit) stumm eingelesen wurde
+        # Baseline-Schutz: Beim allerersten Start des Tages wird nichts Vergangenes gesendet
         if state["baseline_done"]:
             caption = (
                 f"🏟 <b>{escape(fest['fest_name'])}</b>\n"
@@ -160,25 +173,25 @@ def process_fest(fest, state):
             print(f"SENDE RANGLISTE: {filename}")
             send_telegram_document(pdf_bytes, filename, caption)
         else:
-            print(f"Baseline speichert alte Rangliste stumm ab: {filename}")
+            print(f"Baseline speichert bestehende Rangliste lautlos: {filename}")
 
 def main():
     if not BOT_TOKEN or not CHAT_ID:
         raise ValueError("BOT_TOKEN oder CHAT_ID fehlt.")
 
     state = load_state()
-    fests = collect_active_fests()
+    fests = collect_today_active_fests()
 
-    print(f"Anzahl gefundener Aktiv-Feste: {len(fests)}")
+    print(f"Anzahl heutiger Aktiv-Feste: {len(fests)}")
 
     for fest in fests:
         process_fest(fest, state)
 
-    # Schaltet ab dem zweiten Durchlauf die Live-Benachrichtigungen scharf
+    # Nach dem ersten Lauf am Morgen die Leitung für Live-Updates freischalten
     if not state["baseline_done"]:
         state["baseline_done"] = True
         save_state(state)
-        print("Sicherheitsnetz aktiv: Alle alten Ranglisten wurden stumm importiert.")
+        print("Baseline fixiert. Ab dem nächsten Durchlauf wird scharf gesendet.")
 
     print("Bot-Scan erfolgreich beendet.")
 
