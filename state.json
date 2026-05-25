@@ -1,4 +1,7 @@
 {
-  "known_pdfs": {},
+  "known_pdfs": {
+    "6508_2026-05-25_106_Luzerner_Kantonales_Schwingfest-ST.pdf": "3fe51e135f6a3403d47fd1277f23c40c",
+    "5203_2026-05-25_Glarner-Buendner_Kantonalschwingfest-ST.pdf": "c4c9282d29d8a48da4fb140fe3578fcc"
+  },
   "baseline_done": true
 }
