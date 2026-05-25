@@ -11,22 +11,15 @@ from bs4 import BeautifulSoup
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-TARGET_URL = "https://esv.ch/ranglisten/"
+# Die erreichbare Datenbankseite ohne 403-Sperren
+RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
 BASE_URL = "https://arls.esv.ch"
 STATE_FILE = "state.json"
 
-# 🔥 OPTIMIERTE HEADERS: Täuscht einen echten Browser vor, um den 403-Fehler zu umgehen
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Upgrade-Insecure-Requests": "1"
 }
 
 def load_state():
@@ -41,8 +34,6 @@ def load_state():
 
     if "known_pdfs" not in state:
         state["known_pdfs"] = {}
-    if "abgeschlossene_feste" not in state:
-        state["abgeschlossene_feste"] = {}
     if "baseline_done" not in state:
         state["baseline_done"] = False
 
@@ -65,84 +56,54 @@ def is_jung_or_nachwuchs(text):
     blocked_words = ["jung", "nachwuchs", "bueb", "bube", "buben", "schüler", "schueler", "knaben"]
     return any(word in text for word in blocked_words)
 
-def collect_live_fests(state):
+def collect_active_fests():
     try:
-        soup = get_soup(TARGET_URL)
+        soup = get_soup(RANGLISTEN_URL)
     except Exception as e:
-        print(f"Fehler beim Laden der ESV-Hauptseite: {e}")
+        print(f"Fehler Übersicht: {e}")
         return []
 
+    grouped = {}
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
+        full_url = requests.compat.urljoin(BASE_URL, href)
+        if "anlass=" not in full_url:
+            continue
+        
+        anlass_id = parse_qs(urlparse(full_url).query).get("anlass", [""])[0]
+        if not anlass_id:
+            continue
+            
+        text = clean_text(link.get_text(" ", strip=True))
+        if not text:
+            continue
+        if anlass_id not in grouped:
+            grouped[anlass_id] = {"detail_url": full_url, "parts": []}
+        grouped[anlass_id]["parts"].append(text)
+
     entries = []
-    
-    for row in soup.find_all(["tr", "div", "li"]):
-        row_text = clean_text(row.get_text(" ", strip=True))
-        
-        if "aktiv" not in row_text.lower() or is_jung_or_nachwuchs(row_text):
+    for anlass_id, data in grouped.items():
+        parts = data["parts"]
+        if len(parts) < 5:
             continue
-            
-        link_tag = row.find("a", href=True)
-        if not link_tag:
-            continue
-            
-        href = link_tag["href"].strip()
-        fest_name = clean_text(link_tag.get_text(" ", strip=True))
-        
-        anlass_id = ""
-        if "anlass=" in href:
-            anlass_id = parse_qs(urlparse(href).query).get("anlass", [""])[0]
-        else:
-            anlass_id = hashlib.md5(fest_name.encode("utf-8")).hexdigest()[:8]
+        fest_name = clean_text(parts[1])
+        category = clean_text(parts[2]).lower()
+        row_text = clean_text(" ".join(parts))
 
-        if anlass_id in state["abgeschlossene_feste"]:
+        # Nur Aktiv-Feste berücksichtigen
+        if category != "aktiv" or is_jung_or_nachwuchs(row_text):
             continue
 
-        is_external = not ("esv.ch" in href or href.startswith("/"))
+        entries.append({"anlass_id": anlass_id, "detail_url": data["detail_url"], "fest_name": fest_name})
+    return entries
 
-        entries.append({
-            "anlass_id": anlass_id,
-            "detail_url": requests.compat.urljoin(TARGET_URL, href) if href.startswith("/") else href,
-            "fest_name": fest_name,
-            "is_external": is_external
-        })
-        
-    seen = set()
-    unique_entries = []
-    for e in entries:
-        if e["anlass_id"] not in seen:
-            seen.add(e["anlass_id"])
-            unique_entries.append(e)
-            
-    return unique_entries
-
-def get_gang_nummer(href, link_text):
-    combined = f"{href} {link_text}".lower()
-    gang_match = re.search(r"\b([1-6])\b\.?\s*(gang|g\b)", combined)
-    if gang_match:
-        return int(gang_match.group(1))
-    zahlen = re.findall(r"\b([1-6])\b", combined)
-    return int(zahlen[-1]) if zahlen else 0
-
-def get_pdf_title(href, link_text, gang_num):
-    combined = f"{href} {link_text}".lower()
-    if "schluss" in combined or "-rl" in combined or "rangliste" in combined:
-        return "Schlussrangliste"
-    if gang_num > 0:
-        return f"Statistik (nach dem {gang_num}. Gang)"
-    return "Statistik"
-
-def send_telegram_document(pdf_bytes, filename, caption, reply_markup=None):
+def send_telegram_document(pdf_bytes, filename, caption):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
     data = {"chat_id": CHAT_ID, "caption": caption[:1024], "parse_mode": "HTML"}
-    if reply_markup:
-        data["reply_markup"] = json.dumps(reply_markup)
     files = {"document": (filename, BytesIO(pdf_bytes), "application/pdf")}
     requests.post(url, data=data, files=files, timeout=60).raise_for_status()
 
 def process_fest(fest, state):
-    if fest["is_external"]:
-        print(f"Externes Fest erkannt (wird verlinkt): {fest['fest_name']}")
-        return
-
     try:
         soup = get_soup(fest["detail_url"])
     except Exception:
@@ -152,42 +113,25 @@ def process_fest(fest, state):
     schwinger = re.search(r"Anzahl Schwinger\s+(\d+)", page_text, flags=re.IGNORECASE)
     schwinger_txt = schwinger.group(1) if schwinger else ""
 
-    website = ""
-    for link in soup.find_all("a", href=True):
-        href = link["href"].strip()
-        if href.startswith("http") and "esv.ch" not in href:
-            website = href
-            break
-
-    hat_schlussrangliste = False
-    hat_finale_statistik = False
-
     for link in soup.find_all("a", href=True):
         href = link["href"]
         link_text = clean_text(link.get_text(" ", strip=True))
         combined_meta = f"{href} {link_text}".lower()
 
+        # Es muss zwingend eine PDF-Datei sein
         if not href.lower().split("?")[0].endswith(".pdf"):
             continue
 
-        if any(w in combined_meta for w in ["zwischen", "startliste", "einteilung", "notizblatt", "paarung"]):
+        # 🎯 MESSERSCHARFE LOGIK NACH DEINEM SCREENSHOT:
+        # Es MUSS das Wort "rangliste" enthalten sein, aber DARF NICHT "zwischen" enthalten!
+        # Statistiken, Einteilungen und Zwischenranglisten fliegen hier eiskalt raus.
+        is_rangliste = "rangliste" in combined_meta or "classement" in combined_meta or "classifica" in combined_meta
+        is_zwischen = "zwischen" in combined_meta
+
+        if not is_rangliste or is_zwischen:
             continue
 
-        is_stat = "statistik" in combined_meta or "st_" in combined_meta or "st." in combined_meta
-        is_rl = "schluss" in combined_meta or "rangliste" in combined_meta or "-rl" in combined_meta
-
-        if not (is_stat or is_rl):
-            continue
-
-        gang = get_gang_nummer(href, link_text)
-        doc_title = get_pdf_title(href, link_text, gang)
-
-        if doc_title == "Schlussrangliste":
-            hat_schlussrangliste = True
-        if doc_title == "Statistik" and gang == 0:
-            hat_finale_statistik = True
-
-        pdf_url = requests.compat.urljoin(BASE_URL, href) if href.startswith("/") else href
+        pdf_url = requests.compat.urljoin(BASE_URL, href)
         filename = pdf_url.split("/")[-1].split("?")[0]
         storage_key = f"{fest['anlass_id']}_{filename}"
 
@@ -200,47 +144,41 @@ def process_fest(fest, state):
         except Exception:
             continue
 
+        # Registrieren in der state.json
         state["known_pdfs"][storage_key] = hashlib.md5(pdf_bytes).hexdigest()
         save_state(state)
 
+        # Erst senden, wenn die Baseline (Vergangenheit) stumm eingelesen wurde
         if state["baseline_done"]:
-            emoji = "🏆" if "Schluss" in doc_title else "📊"
-            caption = f"🏟 <b>{escape(fest['fest_name'])}</b>\n"
+            caption = (
+                f"🏟 <b>{escape(fest['fest_name'])}</b>\n"
+                f"🏆 <b>Offizielle Festrangliste verfügbar!</b>\n"
+            )
             if schwinger_txt:
-                caption += f"🤼 <b>{escape(schwinger_txt)} Aktivschwinger</b>\n"
-            
-            buttons = []
-            if website:
-                buttons.append({"text": "🌐 Fest-Webseite", "url": website})
-            
-            reply_markup = {"inline_keyboard": [buttons]} if buttons else None
+                caption += f"🤼 {escape(schwinger_txt)} Aktivschwinger\n"
 
-            print(f"SENDE LIVE-UPDATE: {filename}")
-            send_telegram_document(pdf_bytes, filename, caption, reply_markup)
+            print(f"SENDE RANGLISTE: {filename}")
+            send_telegram_document(pdf_bytes, filename, caption)
         else:
-            print(f"Baseline blockiert vergangenheits-PDF stumm: {filename}")
-
-    if hat_schlussrangliste and hat_finale_statistik:
-        print(f"🏆 Fest {fest['fest_name']} ist komplett fertig. Wird für immer archiviert.")
-        state["abgeschlossene_feste"][fest["anlass_id"]] = True
-        save_state(state)
+            print(f"Baseline speichert alte Rangliste stumm ab: {filename}")
 
 def main():
     if not BOT_TOKEN or not CHAT_ID:
         raise ValueError("BOT_TOKEN oder CHAT_ID fehlt.")
 
     state = load_state()
-    fests = collect_live_fests(state)
+    fests = collect_active_fests()
 
-    print(f"Anzahl aktuell laufender Feste auf Hauptseite: {len(fests)}")
+    print(f"Anzahl gefundener Aktiv-Feste: {len(fests)}")
 
     for fest in fests:
         process_fest(fest, state)
 
+    # Schaltet ab dem zweiten Durchlauf die Live-Benachrichtigungen scharf
     if not state["baseline_done"]:
         state["baseline_done"] = True
         save_state(state)
-        print("Vergangenheit erfolgreich blockiert. Ab der nächsten Minute wird scharf gesendet!")
+        print("Sicherheitsnetz aktiv: Alle alten Ranglisten wurden stumm importiert.")
 
     print("Bot-Scan erfolgreich beendet.")
 
