@@ -2,11 +2,12 @@ name: Schwingfest Bot Ticker
 
 on:
   schedule:
-    - cron: '*/5 * * * *' # Läuft alle 5 Minuten rund um die Uhr
-  workflow_dispatch:
+    # GitHub startet den Bot automatisch alle 10 bis 15 Minuten (je nach Serverlast)
+    - cron: '*/10 * * * *'
+  workflow_dispatch: # Ermöglicht dir weiterhin den manuellen Start, falls gewünscht
 
 jobs:
-  run-bot:
+  run-bot-smart-interval:
     runs-on: ubuntu-latest
     
     steps:
@@ -21,20 +22,35 @@ jobs:
       - name: Abhängigkeiten installieren
         run: pip install requests beautifulsoup4
 
-      - name: Bot ausführen
+      - name: Ausführung im 5-Minuten-Takt innerhalb des Workflows
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: python main.py
-
-      - name: Zustand permanent in GitHub speichern
         run: |
+          # Durchlauf 1: Sofort beim Start prüfen
+          echo "=== Start Durchlauf 1 ==="
+          python main.py
+          
+          # Zustand sofort sichern
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           if [ -f state.json ] && ! git diff --exit-code state.json; then
             git add state.json
-            git commit -m "Zustand aktualisiert [skip ci]"
-            git push origin main
-          else
-            echo "Keine Änderungen am Zustand."
+            git commit -m "Zustand aktualisiert (Lauf 1) [skip ci]"
+            git push origin main || echo "Push fehlgeschlagen"
+          fi
+
+          # Exakt 5 Minuten (300 Sekunden) warten
+          echo "Warte 5 Minuten bis zum nächsten automatischen Scan..."
+          sleep 300
+
+          # Durchlauf 2: Nach 5 Minuten nochmals prüfen
+          echo "=== Start Durchlauf 2 ==="
+          python main.py
+          
+          # Zustand erneut sichern
+          if [ -f state.json ] && ! git diff --exit-code state.json; then
+            git add state.json
+            git commit -m "Zustand aktualisiert (Lauf 2) [skip ci]"
+            git push origin main || echo "Push fehlgeschlagen"
           fi
