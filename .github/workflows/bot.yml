@@ -2,14 +2,15 @@ name: Schwingfest Bot Ticker
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
-  workflow_dispatch:
+    # GitHub startet den Bot alle 5 Minuten für eine kurze Abfrage automatisch
+    - cron: '*/5 * * * *'
+  workflow_dispatch: # Erlaubt dir den manuellen Start per Klick
 
 jobs:
-  run-bot-smart-interval:
+  run-bot-fast:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # 📜 Gibt dem Bot explizit die Erlaubnis, Dateien zu speichern!
+      contents: write # Wichtig für das Speichern der state.json
     
     steps:
       - name: Code auschecken
@@ -25,30 +26,20 @@ jobs:
       - name: Abhängigkeiten installieren
         run: pip install requests beautifulsoup4
 
-      - name: Ausführung im 5-Minuten-Takt innerhalb des Workflows
+      - name: Blitzschneller Kurz-Scan (ca. 10 Sekunden)
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          echo "=== Start Durchlauf 1 ==="
           python main.py
           
+          # Zustand sofort sichern und beenden
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           if [ -f state.json ] && ! git diff --exit-code state.json; then
             git add state.json
-            git commit -m "Zustand aktualisiert (Lauf 1) [skip ci]"
+            git commit -m "Zustand aktualisiert [skip ci]"
             git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" main || echo "Push fehlgeschlagen"
-          fi
-
-          echo "Warte 5 Minuten bis zum nächsten automatischen Scan..."
-          sleep 300
-
-          echo "=== Start Durchlauf 2 ==="
-          python main.py
-          
-          if [ -f state.json ] && ! git diff --exit-code state.json; then
-            git add state.json
-            git commit -m "Zustand aktualisiert (Lauf 2) [skip ci]"
-            git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" main || echo "Push fehlgeschlagen"
+          else
+            echo "Keine neuen Dokumente. Keine Ressourcen verschwendet."
           fi
