@@ -133,11 +133,18 @@ def process_fest(fest, state):
         if not href.lower().split("?")[0].endswith(".pdf"):
             continue
 
-        # Filter: Statistiken und offizielle Ranglisten rein, Zwischenstände/Einteilungen raus
-        is_allowed = "rangliste" in combined_meta or "statistik" in combined_meta or "classement" in combined_meta or "classifica" in combined_meta
-        is_zwischen = "zwischen" in combined_meta or "startliste" in combined_meta or "einteilung" in combined_meta
+        # 🎯 DER UNFEHLBARE FILTER:
+        # Wenn irgendwo das Wort "statistik" drin steht, lassen wir es SOFORT durch!
+        if "statistik" in combined_meta:
+            is_allowed = True
+        else:
+            # Nur wenn es KEINE Statistik ist, prüfen wir auf Ranglisten und blockieren Zwischenstände
+            is_allowed = "rangliste" in combined_meta or "classement" in combined_meta or "classifica" in combined_meta
+            is_zwischen = "zwischen" in combined_meta or "startliste" in combined_meta or "einteilung" in combined_meta
+            if is_zwischen:
+                is_allowed = False
 
-        if not is_allowed or is_zwischen:
+        if not is_allowed:
             continue
 
         pdf_url = requests.compat.urljoin(BASE_URL, href)
@@ -153,8 +160,7 @@ def process_fest(fest, state):
         except Exception:
             continue
 
-        # 🎯 EXAKTER TEXT-ABGLEICH:
-        # doc_title zieht stur den Linktext von der Webseite (z.B. "Statistik nach einem Gang")
+        # Exakter Text von der Webseite wird eins zu eins übernommen
         doc_title = link_text if link_text else "Rangliste"
         emoji = "🏆" if "schluss" in doc_title.lower() else "📊"
 
