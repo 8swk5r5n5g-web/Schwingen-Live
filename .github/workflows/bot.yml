@@ -1,16 +1,15 @@
-name: Schwingfest Bot Ticker
+name: Schwingfest Live Ticker Pro
 
 on:
   schedule:
-    # GitHub startet den Bot alle 5 Minuten für eine kurze Abfrage automatisch
-    - cron: '*/5 * * * *'
-  workflow_dispatch: # Erlaubt dir den manuellen Start per Klick
+    - cron: '0 * * * *'
+  workflow_dispatch:
 
 jobs:
-  run-bot-fast:
+  ticker-loop:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Wichtig für das Speichern der state.json
+      contents: write
     
     steps:
       - name: Code auschecken
@@ -26,20 +25,37 @@ jobs:
       - name: Abhängigkeiten installieren
         run: pip install requests beautifulsoup4
 
-      - name: Blitzschneller Kurz-Scan (ca. 10 Sekunden)
+      - name: 50-Minuten Live-Schleife (Scan alle 3 Minuten)
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          python main.py
-          
-          # Zustand sofort sichern und beenden
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          if [ -f state.json ] && ! git diff --exit-code state.json; then
-            git add state.json
-            git commit -m "Zustand aktualisiert [skip ci]"
-            git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" main || echo "Push fehlgeschlagen"
-          else
-            echo "Keine neuen Dokumente. Keine Ressourcen verschwendet."
-          fi
+          for run in {1..16}
+          do
+            echo "=========================================="
+            echo "📊 STARTE LIVE-SCAN DURCHGANG $run VON 16"
+            echo "=========================================="
+            
+            python main.py
+            
+            git config --local user.email "action@github.com"
+            git config --local user.name "GitHub Action Pro"
+            if [ -f state.json ] && ! git diff --exit-code state.json; then
+              git add state.json
+              git commit -m "Zustand aktualisiert (Lauf $run) [skip ci]"
+              git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" main || echo "Push fehlgeschlagen, versuche es im nächsten Durchgang erneut."
+            fi
+
+            if [ $run -eq 16 ]; then
+              echo "Stündlicher Schleifendurchlauf beendet. Job schließt sauber."
+              break
+            fi
+
+            echo "Scan $run beendet. Warte 3 Minuten..."
+            seconds=0
+            while [ $seconds -lt 180 ]; do
+              sleep 60
+              seconds=$((seconds + 60))
+              echo "⏱️ Bot überwacht aktiv. Wartestatus: $((seconds / 60)) Minute(n) um."
+            done
+          done
