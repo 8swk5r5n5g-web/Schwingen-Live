@@ -55,6 +55,12 @@ def extract_fests_from_main_page():
         return []
 
     fests = []
+    # Strikte Filterliste für alle Arten von Nachwuchs-, Jugend- und Hoffnungstagen
+    jungschwinger_woerter = [
+        "jung", "nachwuchs", "bueb", "bube", "buben", "schüler", 
+        "schueler", "knaben", "espoir", "espoirs", "jugend"
+    ]
+
     for link in soup.find_all("a", href=True):
         href = link["href"]
         if "anlass=" not in href:
@@ -67,6 +73,11 @@ def extract_fests_from_main_page():
 
         fest_name = clean_text(link.get_text(" ", strip=True))
         if not fest_name or fest_name.isdigit():
+            continue
+
+        # Prüfen, ob es sich um ein Jungschwingfest handelt
+        if any(wort in fest_name.lower() for wort in jungschwinger_woerter):
+            print(f"🚫 Nachwuchs-/Jugendfest ignoriert: {fest_name}")
             continue
 
         if not any(f["anlass_id"] == anlass_id for f in fests):
@@ -139,6 +150,7 @@ def process_fest(fest, state):
         filename_to_send = href.split("/")[-1].split("?")[0]
 
         if state["baseline_done"]:
+            # 🎯 HIER WIRD DER FESTNAME IN DIE TELEGRAM-NACHRICHT EINGEBAUT:
             caption = (
                 f"🏟 <b>{escape(fest['fest_name'])}</b>\n"
                 f"{emoji} <b>{escape(doc_title)}</b>\n"
