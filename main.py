@@ -9,7 +9,8 @@ import requests
 from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+CHAT_ID_AKTIVE = os.getenv("CHAT_ID")
+CHAT_ID_NACHWUCHS = os.getenv("CHAT_ID_NACHWUCHS")
 
 RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
 STATE_FILE = "state.json"
@@ -55,7 +56,6 @@ def extract_fests_from_main_page():
         return []
 
     fests = []
-    # Strikte Filterliste für alle Arten von Nachwuchs-, Jugend- und Hoffnungstagen
     jungschwinger_woerter = [
         "jung", "nachwuchs", "bueb", "bube", "buben", "schüler", 
         "schueler", "knaben", "espoir", "espoirs", "jugend"
@@ -75,20 +75,22 @@ def extract_fests_from_main_page():
         if not fest_name or fest_name.isdigit():
             continue
 
-        # Prüfen, ob es sich um ein Jungschwingfest handelt
-        if any(wort in fest_name.lower() for wort in jungschwinger_woerter):
-            print(f"🚫 Nachwuchs-/Jugendfest ignoriert: {fest_name}")
-            continue
+        is_nachwuchs = any(wort in fest_name.lower() for wort in jungschwinger_woerter)
 
         if not any(f["anlass_id"] == anlass_id for f in fests):
             detail_url = f"https://arls.esv.ch/ranglisten/?anlass={anlass_id}"
-            fests.append({"anlass_id": anlass_id, "detail_url": detail_url, "fest_name": fest_name})
+            fests.append({
+                "anlass_id": anlass_id, 
+                "detail_url": detail_url, 
+                "fest_name": fest_name,
+                "is_nachwuchs": is_nachwuchs
+            })
 
     return fests
 
-def send_telegram_document(pdf_bytes, filename, caption):
+def send_telegram_document(target_chat_id, pdf_bytes, filename, caption):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-    data = {"chat_id": CHAT_ID, "caption": caption[:1024], "parse_mode": "HTML"}
+    data = {"chat_id": target_chat_id, "caption": caption[:1024], "parse_mode": "HTML"}
     files = {"document": (filename, BytesIO(pdf_bytes), "application/pdf")}
     requests.post(url, data=data, files=files, timeout=60).raise_for_status()
 
@@ -110,8 +112,8 @@ def process_fest(fest, state):
         ext_text = external_link.get_text().lower()
         if "festobjekt" in ext_href or "festseite" in ext_text or "fest-website" in ext_text:
             fest_website = ext_href
-            if not fest_website.startswith("http"):
-                fest_website = requests.compat.urljoin("https://esv.ch", fest_website)
+            if not ext_href.startswith("http"):
+                fest_website = requests.compat.urljoin("https://esv.ch", ext_href)
 
     for link in soup.find_all("a", href=True):
         href = link["href"].strip()
@@ -150,18 +152,25 @@ def process_fest(fest, state):
         filename_to_send = href.split("/")[-1].split("?")[0]
 
         if state["baseline_done"]:
-            # 🎯 HIER WIRD DER FESTNAME IN DIE TELEGRAM-NACHRICHT EINGEBAUT:
             caption = (
                 f"🏟 <b>{escape(fest['fest_name'])}</b>\n"
                 f"{emoji} <b>{escape(doc_title)}</b>\n"
             )
             if schwinger_txt:
-                caption += f"🤼 {escape(schwinger_txt)} Aktivschwinger\n"
+                typ = "Nachwuchsschwinger" if fest["is_nachwuchs"] else "Aktivschwinger"
+                caption += f"🤼 {escape(schwinger_txt)} {typ}\n"
             if fest_website:
                 caption += f"🌐 <a href='{escape(fest_website)}'>Zur Festwebseite</a>\n"
 
-            print(f"🚀 SENDE AN TELEGRAM: {fest['fest_name']} -> {doc_title}")
-            send_telegram_document(pdf_bytes, filename_to_send, caption)
+            if fest["is_nachwuchs"]:
+                if CHAT_ID_NACHWUCHS:
+                    print(f"🚀 SENDEN AN NACHWUCHS-KANAL: {fest['fest_name']} -> {doc_title}")
+                    send_telegram_document(CHAT_ID_NACHWUCHS, pdf_bytes, filename_to_send, caption)
+                else:
+                    print(f"⚠️ Nachwuchs-PDF gefunden, aber CHAT_ID_NACHWUCHS ist nicht eingerichtet.")
+            else:
+                print(f"🚀 SENDEN AN AKTIV-KANAL: {fest['fest_name']} -> {doc_title}")
+                send_telegram_document(CHAT_ID_AKTIVE, pdf_bytes, filename_to_send, caption)
         else:
             print(f"💤 Baseline-Modus speichert im Hintergrund: {doc_title}")
 
@@ -169,21 +178,21 @@ def process_fest(fest, state):
         save_state(state)
 
 def main():
-    if not BOT_TOKEN or not CHAT_ID:
+    if not BOT_TOKEN or not CHAT_ID_AKTIVE:
         raise ValueError("BOT_TOKEN oder CHAT_ID fehlt in den GitHub Secrets.")
 
     state = load_state()
     fests = extract_fests_from_main_page()
 
-    print(f"Anzahl überwachter Feste auf der Ranglisten-Seite: {len(fests)}")
+    print(f"Anzahl überwachter Feste insgesamt: {len(fests)}")
 
-    for fest in fests:
-        process_fest(fest, state)
+    for f in fests:
+        process_fest(f, state)
 
     if not state["baseline_done"]:
         state["baseline_done"] = True
         save_state(state)
-        print("✅ Baseline erfolgreich fixiert. Ab dem nächsten Durchlauf wird scharf gesendet.")
+        print("✅ Baseline erfolgreich fixiert. Ab dem nächsten Durchlauf wird scharf in beide Kanäle gesendet.")
 
     print("🏁 Bot-Scan erfolgreich beendet.")
 
