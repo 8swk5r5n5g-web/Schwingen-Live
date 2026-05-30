@@ -29,6 +29,7 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          CHAT_ID_NACHWUCHS: ${{ secrets.SCHWINGEN_LIVE_JUNGSCHWINGER }}
         run: |
           for run in {1..16}
           do
