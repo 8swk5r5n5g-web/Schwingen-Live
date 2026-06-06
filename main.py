@@ -58,7 +58,7 @@ def extract_fests_from_main_page():
     fests = []
     jungschwinger_woerter = [
         "jung", "nachwuchs", "bueb", "bube", "buben", "schüler", 
-        "schueler", "knaben", "espoir", "espoirs", "jugend"
+        "schueler", "knaben", "espoir", "espoirs", "jugend", "jahrgang", "mg"
     ]
 
     for link in soup.find_all("a", href=True):
@@ -75,7 +75,8 @@ def extract_fests_from_main_page():
         if not fest_name or fest_name.isdigit():
             continue
 
-        is_nachwuchs = any(wort in fest_name.lower() for wort in jungschwinger_woerter)
+        name_lower = fest_name.lower()
+        is_nachwuchs = any(wort in name_lower for wort in jungschwinger_woerter)
 
         if not any(f["anlass_id"] == anlass_id for f in fests):
             detail_url = f"https://arls.esv.ch/ranglisten/?anlass={anlass_id}"
@@ -103,6 +104,9 @@ def process_fest(fest, state):
 
     page_text = clean_text(soup.get_text(" ", strip=True))
     
+    datum_match = re.search(r"(\d{2}\.\d{2}\.\d{4})", page_text)
+    fest_datum = datum_match.group(1) if datum_match else ""
+
     schwinger_match = re.search(r"Anzahl Schwinger\s+(\d+)", page_text, flags=re.IGNORECASE)
     schwinger_txt = schwinger_match.group(1) if schwinger_match else ""
 
@@ -123,9 +127,25 @@ def process_fest(fest, state):
         if not href.lower().split("?")[0].endswith(".pdf"):
             continue
 
-        is_blockiert = "zwischen" in combined_meta or "startliste" in combined_meta or "einteilung" in combined_meta
-        if is_blockiert:
+        # 🛑 ANTI-SPAM-FILTER: Blockiert alles, was nach Zwischenstand aussieht
+        spam_woerter = [
+            "zwischen", "startliste", "einteilung", 
+            "nach 1", "nach 2", "nach 3", "nach 4", "nach 5",
+            "gang 1", "gang 2", "gang 3", "gang 4", "gang 5"
+        ]
+        if any(sw in combined_meta for sw in spam_woerter):
             continue
+
+        # 🏆 STRIKTER ERLAUBNIS-FILTER: Nur echte Endresultate zulassen
+        is_schlussrangliste = "schlussrangliste" in combined_meta or href.lower().endswith("-rl.pdf")
+        is_final_statistik = "statistik" in combined_meta or href.lower().endswith("-st.pdf")
+        
+        if not (is_schlussrangliste or is_final_statistik):
+            continue
+
+        filename_clean = href.split("/")[-1].lower()
+        jungschwinger_woerter = ["jung", "nachwuchs", "bueb", "bube", "buben", "schueler", "schüler", "knaben", "espoir", "jugend"]
+        is_fest_nachwuchs = fest["is_nachwuchs"] or any(w in filename_clean for w in jungschwinger_woerter)
 
         clean_path = href.split("?")[0].strip("/")
         storage_key = f"{fest['anlass_id']}_{clean_path}"
@@ -148,31 +168,30 @@ def process_fest(fest, state):
             continue
 
         doc_title = link_text if link_text else "Dokument"
-        emoji = "🏆" if "schluss" in doc_title.lower() else "📊"
+        emoji = "🏆" if is_schlussrangliste else "📊"
         filename_to_send = href.split("/")[-1].split("?")[0]
 
         if state["baseline_done"]:
             caption = (
-                f"🏟 <b>{escape(fest['fest_name'])}</b>\n"
+                f"🏟️ <b>{escape(fest['fest_name'])}</b>\n"
+                f"🗓️ {escape(fest_datum)}\n"
                 f"{emoji} <b>{escape(doc_title)}</b>\n"
             )
             if schwinger_txt:
-                typ = "Nachwuchsschwinger" if fest["is_nachwuchs"] else "Aktivschwinger"
+                typ = "Nachwuchsschwinger" if is_fest_nachwuchs else "Aktivschwinger"
                 caption += f"🤼 {escape(schwinger_txt)} {typ}\n"
             if fest_website:
                 caption += f"🌐 <a href='{escape(fest_website)}'>Zur Festwebseite</a>\n"
 
-            if fest["is_nachwuchs"]:
+            if is_fest_nachwuchs:
                 if CHAT_ID_NACHWUCHS:
-                    print(f"🚀 SENDEN AN NACHWUCHS-KANAL: {fest['fest_name']} -> {doc_title}")
+                    print(f"🚀 SENDEN AN NACHWUCHS: {fest['fest_name']} -> {doc_title}")
                     send_telegram_document(CHAT_ID_NACHWUCHS, pdf_bytes, filename_to_send, caption)
-                else:
-                    print(f"⚠️ Nachwuchs-PDF gefunden, aber CHAT_ID_NACHWUCHS ist nicht eingerichtet.")
             else:
-                print(f"🚀 SENDEN AN AKTIV-KANAL: {fest['fest_name']} -> {doc_title}")
+                print(f"🚀 SENDEN AN AKTIV: {fest['fest_name']} -> {doc_title}")
                 send_telegram_document(CHAT_ID_AKTIVE, pdf_bytes, filename_to_send, caption)
         else:
-            print(f"💤 Baseline-Modus speichert im Hintergrund: {doc_title}")
+            print(f"💤 Baseline speichert stumm im Hintergrund: {doc_title}")
 
         state["known_pdfs"][storage_key] = hashlib.md5(pdf_bytes).hexdigest()
         save_state(state)
@@ -184,17 +203,15 @@ def main():
     state = load_state()
     fests = extract_fests_from_main_page()
 
-    print(f"Anzahl überwachter Feste insgesamt: {len(fests)}")
-
     for f in fests:
         process_fest(f, state)
 
     if not state["baseline_done"]:
         state["baseline_done"] = True
         save_state(state)
-        print("✅ Baseline erfolgreich fixiert. Ab dem nächsten Durchlauf wird scharf in beide Kanäle gesendet.")
+        print("✅ Baseline fixiert.")
 
-    print("🏁 Bot-Scan erfolgreich beendet.")
+    print("🏁 Bot-Scan beendet.")
 
 if __name__ == "__main__":
     main()
