@@ -136,6 +136,10 @@ def is_nachwuchs(name):
     return any(w in n for w in NACHWUCHS_WOERTER)
 
 def extract_fests():
+    from datetime import date
+    heute = date.today().strftime("%d.%m.%Y")  # Format auf Seite: 06.06.2026
+    print(f"📅 Suche Feste vom {heute}")
+
     try:
         soup = get_soup(RANGLISTEN_URL)
     except Exception as e:
@@ -153,6 +157,13 @@ def extract_fests():
         fest_name = clean_text(link.get_text(" ", strip=True))
         if not fest_name or fest_name.isdigit():
             continue
+
+        # Nur Feste von heute — Datum steht im Link-Text oder Umgebungstext
+        parent_text = clean_text(link.parent.get_text(" ", strip=True)) if link.parent else ""
+        combined_text = f"{fest_name} {parent_text}"
+        if heute not in combined_text:
+            continue
+
         seen.add(anlass_id)
         fests.append({
             "anlass_id":  anlass_id,
@@ -161,7 +172,7 @@ def extract_fests():
             "nachwuchs":  is_nachwuchs(fest_name),
         })
 
-    print(f"📋 {len(fests)} Feste gefunden.")
+    print(f"📋 {len(fests)} Feste heute gefunden.")
     return fests
 
 
