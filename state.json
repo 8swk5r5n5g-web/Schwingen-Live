@@ -1,1 +1,18 @@
-{}
+{
+  "known_pdfs": {
+    "6993_documents/ranglisten/zs1/2026-06-06_103_Urner_Kantonales_Schwingfest-ST.pdf": "3aac28226eed954680e96e2a30737eeb",
+    "6993_documents/ranglisten/zs2/2026-06-06_103_Urner_Kantonales_Schwingfest-ST.pdf": "a127df2f69a1a78b672e94489c996ed6",
+    "6993_documents/ranglisten/zs3/2026-06-06_103_Urner_Kantonales_Schwingfest-ST.pdf": "e7395112754e481b15bf219011183529",
+    "6594_documents/ranglisten/zs1/2026-06-06_NWSV_Nachwuchsschwingertag_2026-ST.pdf": "389f9cf50ce1934ae6b4f52196a3ae72",
+    "6594_documents/ranglisten/zs2/2026-06-06_NWSV_Nachwuchsschwingertag_2026-ST.pdf": "11396ad986dfde6cd7f2e4fbce376ffe",
+    "6594_documents/ranglisten/zs3/2026-06-06_NWSV_Nachwuchsschwingertag_2026-ST.pdf": "33b96d60406cc08e573fab015ad6d72d",
+    "6594_documents/ranglisten/zs4/2026-06-06_NWSV_Nachwuchsschwingertag_2026-ST.pdf": "6b2b6bacd8efe3b1c684a469ff224ada",
+    "6644_documents/ranglisten/zs1/2026-06-06_Herisauer_Buebeschwinget-ST.pdf": "e960aa8332cca31cc00268c4a7c616c1",
+    "6644_documents/ranglisten/zs2/2026-06-06_Herisauer_Buebeschwinget-ST.pdf": "2c38e1760ffb28004ae3a1ab3246a812",
+    "6644_documents/ranglisten/zs3/2026-06-06_Herisauer_Buebeschwinget-ST.pdf": "5331c385df776a69f48ce5474c57b36c",
+    "6644_documents/ranglisten/zs4/2026-06-06_Herisauer_Buebeschwinget-ST.pdf": "7e544a01fa932e1261617274592fcb4f",
+    "7144_documents/ranglisten/zs1/2026-06-06_5_Jungschwingertag_Zollikofen-ST.pdf": "9d1dfb7f3aa49dc1a5dce3defaa6f3cd",
+    "7144_documents/ranglisten/zs2/2026-06-06_5_Jungschwingertag_Zollikofen-ST.pdf": "70fdbf6bf6cbaf2c27bafa92153b3b7d"
+  },
+  "baseline_done": true
+}
