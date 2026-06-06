@@ -106,7 +106,7 @@ def save_state(state: dict):
 
 # ── HTTP ──────────────────────────────────────────────────────────────────────
 def get_soup(url: str) -> BeautifulSoup:
-    time.sleep(1.5)  # Pause zwischen Anfragen → verhindert Rate Limiting (429)
+    time.sleep(2.5)  # Pause zwischen Anfragen → verhindert Rate Limiting (429)
     res = requests.get(url, headers=HEADERS, timeout=30)
     res.raise_for_status()
     return BeautifulSoup(res.text, "html.parser")
@@ -115,20 +115,25 @@ def clean_text(text: str) -> str:
     return " ".join(text.replace("\xa0", " ").split()).strip()
 
 def fetch_pdf(href: str) -> bytes | None:
-    """Lädt PDF — unterstützt absolute und relative URLs."""
+    """Lädt PDF — unterstützt absolute und relative URLs, probiert alle Domains."""
     if href.startswith("http"):
         candidates = [href]
     else:
+        # Relative URL: alle möglichen Domains probieren
         candidates = [
             urljoin("https://arls.esv.ch", href),
+            urljoin("https://www.esv.ch", href),
             urljoin("https://esv.ch", href),
         ]
     for url in candidates:
         try:
+            time.sleep(0.5)  # kurze Pause auch zwischen PDF-Downloads
             res = requests.get(url, headers=HEADERS, timeout=20)
             if res.status_code == 200 and len(res.content) > 500:
                 print(f"    ✅ PDF OK: {url}")
                 return res.content
+            else:
+                print(f"    ⚠️  HTTP {res.status_code}: {url}")
         except Exception as e:
             print(f"    ⚠️  Fehler ({url}): {e}")
     print(f"    ❌ PDF nicht ladbar: {href}")
@@ -188,7 +193,10 @@ def process_fest(fest: dict, state: dict):
     try:
         soup = get_soup(fest["detail_url"])
     except Exception as e:
-        print(f"  ❌ Detailseite: {e}")
+        if "429" in str(e):
+            print(f"  ⏳ Rate limit (429) — Fest wird beim nächsten Lauf erneut versucht.")
+        else:
+            print(f"  ❌ Detailseite: {e}")
         return
 
     page_text = clean_text(soup.get_text(" ", strip=True))
