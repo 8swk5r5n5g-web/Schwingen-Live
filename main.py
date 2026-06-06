@@ -56,13 +56,11 @@ def extract_fests_from_main_page():
         return []
 
     fests = []
-    # Wasserdichte Begriffe für Nachwuchs- und Jungschwingertage
     jungschwinger_woerter = [
         "jung", "nachwuchs", "bueb", "bube", "buben", "schüler", 
         "schueler", "knaben", "espoir", "espoirs", "jugend", "jahrgang"
     ]
 
-    # Wir suchen direkt nach allen Links, das verhindert jegliche NoneType-Abstürze!
     for link in soup.find_all("a", href=True):
         href = link["href"]
         if "anlass=" not in href:
@@ -77,7 +75,6 @@ def extract_fests_from_main_page():
         if not fest_name or fest_name.isdigit():
             continue
 
-        # Trennung über den Namen – absolut sicher gegen Tabellenänderungen
         name_lower = fest_name.lower()
         is_nachwuchs = any(wort in name_lower for wort in jungschwinger_woerter)
 
@@ -130,7 +127,6 @@ def process_fest(fest, state):
         if not href.lower().split("?")[0].endswith(".pdf"):
             continue
 
-        # ANTI-SPAM: Keine Zwischenstände nach den Gängen 1-5 senden
         spam_woerter = [
             "zwischen", "startliste", "einteilung", 
             "nach 1", "nach 2", "nach 3", "nach 4", "nach 5",
@@ -139,14 +135,12 @@ def process_fest(fest, state):
         if any(sw in combined_meta for sw in spam_woerter):
             continue
 
-        # NUR ECHTE ENDRESULTATE (Schlussrangliste & End-Statistik)
         is_schlussrangliste = "schlussrangliste" in combined_meta or href.lower().endswith("-rl.pdf")
         is_final_statistik = "statistik" in combined_meta or href.lower().endswith("-st.pdf")
         
         if not (is_schlussrangliste or is_final_statistik):
             continue
 
-        # Zweite Absicherung über den Dateinamen der PDF
         filename_clean = href.split("/")[-1].lower()
         jungschwinger_woerter = ["jung", "nachwuchs", "bueb", "bube", "buben", "schueler", "schüler", "knaben", "espoir", "jugend"]
         is_fest_nachwuchs = fest["is_nachwuchs"] or any(w in filename_clean for w in jungschwinger_woerter)
@@ -176,7 +170,6 @@ def process_fest(fest, state):
         filename_to_send = href.split("/")[-1].split("?")[0]
 
         if state["baseline_done"]:
-            # 🎯 PERFEKTE NACHRICHT: Festname enthält beim ESV immer direkt den Ort!
             caption = (
                 f"🏟️ <b>{escape(fest['fest_name'])}</b>\n"
                 f"🗓️ {escape(fest_datum)}\n"
@@ -194,7 +187,7 @@ def process_fest(fest, state):
                     send_telegram_document(CHAT_ID_NACHWUCHS, pdf_bytes, filename_to_send, caption)
             else:
                 print(f"🚀 SENDEN AN AKTIV: {fest['fest_name']} -> {doc_title}")
-                send_telegram_document(CHAT_ID_AKTIVE, pdf_bytes, filename_to_send, caption)
+                send_telegram_document(CHAT_ID_ACTIVE, pdf_bytes, filename_to_send, caption)
         else:
             print(f"💤 Baseline speichert stumm im Hintergrund: {doc_title}")
 
