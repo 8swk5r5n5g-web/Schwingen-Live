@@ -1,1 +1,83 @@
+name: Schwingfest Live Ticker Pro
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
 
+jobs:
+  ticker-loop:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Code auschecken
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Abhängigkeiten installieren
+        run: pip install requests beautifulsoup4
+
+      - name: Git konfigurieren
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action Pro"
+
+      - name: State prüfen
+        run: |
+          python3 -c "
+          import json, os
+          if os.path.exists('state.json'):
+              s = json.load(open('state.json'))
+              print(f'  known_pdfs : {len(s.get(\"known_pdfs\", {}))} Einträge')
+              print(f'  baseline_done: {s.get(\"baseline_done\", False)}')
+          else:
+              print('  Keine state.json vorhanden.')
+          "
+
+      - name: 50-Minuten Live-Schleife (Scan alle 3 Minuten)
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          CHAT_ID_NACHWUCHS: ${{ secrets.SCHWINGEN_LIVE_JUNGSCHWINGER }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          for run in {1..16}
+          do
+            echo "=========================================="
+            echo "📊 STARTE LIVE-SCAN DURCHGANG $run VON 16"
+            echo "=========================================="
+
+            python main.py
+
+            # State speichern: erst rebase (verhindert Konflikte), dann push
+            if ! git diff --exit-code state.json > /dev/null 2>&1; then
+              git add state.json
+              git commit -m "State Lauf $run [skip ci]"
+              git pull --rebase "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git" main
+              git push "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git" main
+              echo "✅ State gespeichert (Lauf $run)"
+            else
+              echo "ℹ️  Keine Änderungen in state.json."
+            fi
+
+            if [ $run -eq 16 ]; then
+              echo "Stündlicher Schleifendurchlauf beendet."
+              break
+            fi
+
+            echo "Scan $run beendet. Warte 3 Minuten..."
+            seconds=0
+            while [ $seconds -lt 180 ]; do
+              sleep 60
+              seconds=$((seconds + 60))
+              echo "⏱️  Wartestatus: $((seconds / 60)) / 3 Minuten"
+            done
+          done
