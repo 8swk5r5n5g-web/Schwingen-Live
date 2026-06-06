@@ -56,14 +56,18 @@ def extract_fests_from_main_page():
         return []
 
     fests = []
-    
-    # Wir loopen durch alle Tabellenzeilen (Feste) auf der ESV-Seite
-    for row in soup.find_all("tr"):
-        link = row.find("a", href=True)
-        if not link or "anlass=" not in link["href"]:
+    # Wasserdichte Begriffe für Nachwuchsfeste
+    jungschwinger_woerter = [
+        "jung", "nachwuchs", "bueb", "bube", "buben", "schüler", 
+        "schueler", "knaben", "espoir", "espoirs", "jugend", "jahrgang"
+    ]
+
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
+        if "anlass=" not in href:
             continue
 
-        parsed_url = urlparse(link["href"])
+        parsed_url = urlparse(href)
         anlass_id = parse_qs(parsed_url.query).get("anlass", [""])[0]
         if not anlass_id:
             continue
@@ -72,13 +76,9 @@ def extract_fests_from_main_page():
         if not fest_name or fest_name.isdigit():
             continue
 
-        # 🎯 DER ULTIMATIVE CHECK: Wir lesen das offizielle ESV-Label aus der Zeile!
-        row_text = row.get_text().lower()
-        
-        # Wenn in der Zeile "jung" steht, ist es zu 100% ein Nachwuchsfest!
-        # Falls die ESV-Tabelle mal unvollständig ist, checken wir zur Sicherheit auch den Namen.
-        jungschwinger_woerter = ["jung", "nachwuchs", "bueb", "bube", "buben", "schueler", "schüler", "knaben", "espoir", "jugend"]
-        is_nachwuchs = "jung" in row_text or any(w in fest_name.lower() for w in jungschwinger_woerter)
+        # Trennung direkt über den Namen (Absolut robust gegen Tabellenfehler)
+        name_lower = fest_name.lower()
+        is_nachwuchs = any(wort in name_lower for wort in jungschwinger_woerter)
 
         if not any(f["anlass_id"] == anlass_id for f in fests):
             detail_url = f"https://arls.esv.ch/ranglisten/?anlass={anlass_id}"
@@ -109,10 +109,7 @@ def process_fest(fest, state):
     datum_match = re.search(r"(\d{2}\.\d{2}\.\d{4})", page_text)
     fest_datum = datum_match.group(1) if datum_match else ""
 
-    # Wir holen uns den Ort aus der Detailseite (falls vorhanden)
-    ort_match = re.search(r"Ort\s+([^\n📊🏆🤼‍♂️⏰🌐]+)", page_text, flags=re.IGNORECASE)
-    fest_ort = ort_match.group(1).strip() if ort_match else ""
-
+    # Wir holen die Schwingeranzahl für die Nachricht
     schwinger_match = re.search(r"Anzahl Schwinger\s+(\d+)", page_text, flags=re.IGNORECASE)
     schwinger_txt = schwinger_match.group(1) if schwinger_match else ""
 
@@ -142,13 +139,14 @@ def process_fest(fest, state):
         if any(sw in combined_meta for sw in spam_woerter):
             continue
 
-        # NUR ECHTE ENDRESULTATE
+        # NUR ECHTE ENDRESULTATE (Schlussrangliste / Statistik)
         is_schlussrangliste = "schlussrangliste" in combined_meta or href.lower().endswith("-rl.pdf")
         is_final_statistik = "statistik" in combined_meta or href.lower().endswith("-st.pdf")
         
         if not (is_schlussrangliste or is_final_statistik):
             continue
 
+        # Zweite Absicherung über den Dateinamen
         filename_clean = href.split("/")[-1].lower()
         jungschwinger_woerter = ["jung", "nachwuchs", "bueb", "bube", "buben", "schueler", "schüler", "knaben", "espoir", "jugend"]
         is_fest_nachwuchs = fest["is_nachwuchs"] or any(w in filename_clean for w in jungschwinger_woerter)
@@ -178,13 +176,12 @@ def process_fest(fest, state):
         filename_to_send = href.split("/")[-1].split("?")[0]
 
         if state["baseline_done"]:
-            # Formatierung mit Name, Ort und Datum
-            caption = f"🏟️ <b>{escape(fest['fest_name'])}</b>\n"
-            if fest_ort and fest_ort.lower() not in fest["fest_name"].lower():
-                caption += f"📍 Ort: {escape(fest_ort)}\n"
-            caption += f"🗓️ {escape(fest_datum)}\n"
-            caption += f"{emoji} <b>{escape(doc_title)}</b>\n"
-            
+            # 🎯 PERFEKTE FORMATIERUNG: Festname (enthält den Ort) ganz oben fettgedruckt
+            caption = (
+                f"🏟️ <b>{escape(fest['fest_name'])}</b>\n"
+                f"🗓️ {escape(fest_datum)}\n"
+                f"{emoji} <b>{escape(doc_title)}</b>\n"
+            )
             if schwinger_txt:
                 typ = "Nachwuchsschwinger" if is_fest_nachwuchs else "Aktivschwinger"
                 caption += f"🤼 {escape(schwinger_txt)} {typ}\n"
@@ -197,7 +194,7 @@ def process_fest(fest, state):
                     send_telegram_document(CHAT_ID_NACHWUCHS, pdf_bytes, filename_to_send, caption)
             else:
                 print(f"🚀 SENDEN AN AKTIV: {fest['fest_name']} -> {doc_title}")
-                send_telegram_document(CHAT_ID_AKTIVE, pdf_bytes, filename_to_send, caption)
+                send_telegram_document(CHAT_ID_ACTIVE, pdf_bytes, filename_to_send, caption)
         else:
             print(f"💤 Baseline speichert stumm im Hintergrund: {doc_title}")
 
@@ -210,6 +207,8 @@ def main():
 
     state = load_state()
     fests = extract_fests_from_main_page()
+
+    print(f"Anzahl überwachter Feste insgesamt: {len(fests)}")
 
     for f in fests:
         process_fest(f, state)
