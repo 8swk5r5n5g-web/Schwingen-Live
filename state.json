@@ -1,4 +1,11 @@
 {
-  "known_pdfs": {},
-  "baseline_done": false
+  "known_pdfs": {
+    "6993_documents/ranglisten/zs1/2026-06-06_103_Urner_Kantonales_Schwingfest-ST.pdf": "3aac28226eed954680e96e2a30737eeb",
+    "6594_documents/ranglisten/zs1/2026-06-06_NWSV_Nachwuchsschwingertag_2026-ST.pdf": "94324fe79b62400dc1a082c21aea0f35",
+    "6644_documents/ranglisten/zs1/2026-06-06_Herisauer_Buebeschwinget-ST.pdf": "e960aa8332cca31cc00268c4a7c616c1",
+    "7144_documents/ranglisten/zs1/2026-06-06_5_Jungschwingertag_Zollikofen-ST.pdf": "9d1dfb7f3aa49dc1a5dce3defaa6f3cd",
+    "7281_documents/ranglisten/zs1/2026-06-06_Zuger_Kant_Nachwuchsschwingertag-ST.pdf": "bb5f558726a6de7ea8f17567d01263f6",
+    "6737_documents/ranglisten/zs1/2026-06-06_Fete_Cantonale_Valaisanne_des_Espoirs-ST.pdf": "930f5660991848f90718ddcfc90cbca7"
+  },
+  "baseline_done": true
 }
