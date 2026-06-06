@@ -146,33 +146,42 @@ def extract_fests():
         print(f"❌ Hauptseite nicht ladbar: {e}")
         return []
 
+    # Die Seite hat eine Tabelle: Datum | Festname | Typ | Ort | Rangliste
+    # Jede Zeile = eine <tr>, das Datum steht als erster Link in der Zeile
     fests, seen = [], set()
-    for link in soup.find_all("a", href=True):
-        href = link["href"]
-        if "anlass=" not in href:
-            continue
-        anlass_id = parse_qs(urlparse(href).query).get("anlass", [""])[0]
-        if not anlass_id or anlass_id in seen:
-            continue
-        fest_name = clean_text(link.get_text(" ", strip=True))
-        if not fest_name or fest_name.isdigit():
+
+    for row in soup.find_all("tr"):
+        cells = row.find_all("td")
+        if len(cells) < 2:
             continue
 
-        # Nur Feste von heute — Datum steht im Link-Text oder Umgebungstext
-        parent_text = clean_text(link.parent.get_text(" ", strip=True)) if link.parent else ""
-        combined_text = f"{fest_name} {parent_text}"
-        if heute not in combined_text:
+        # Datum aus erster Zelle
+        datum_text = clean_text(cells[0].get_text(" ", strip=True))
+        if heute not in datum_text:
             continue
 
-        seen.add(anlass_id)
-        fests.append({
-            "anlass_id":  anlass_id,
-            "detail_url": f"https://arls.esv.ch/ranglisten/?anlass={anlass_id}",
-            "fest_name":  fest_name,
-            "nachwuchs":  is_nachwuchs(fest_name),
-        })
+        # Festname und anlass_id aus den Links in der Zeile
+        for link in row.find_all("a", href=True):
+            href = link["href"]
+            if "anlass=" not in href:
+                continue
+            anlass_id = parse_qs(urlparse(href).query).get("anlass", [""])[0]
+            if not anlass_id or anlass_id in seen:
+                continue
+            fest_name = clean_text(link.get_text(" ", strip=True))
+            # Nur echte Festnamen — kein Datum, kein "Rangliste", kein Typ
+            if not fest_name or fest_name in ("Rangliste", "aktiv", "jung") or re.match(r"^\d{2}\.\d{2}\.\d{4}$", fest_name):
+                continue
+            seen.add(anlass_id)
+            fests.append({
+                "anlass_id":  anlass_id,
+                "detail_url": f"https://arls.esv.ch/ranglisten/?anlass={anlass_id}",
+                "fest_name":  fest_name,
+                "nachwuchs":  is_nachwuchs(fest_name),
+            })
+            break  # Pro Zeile nur einen Eintrag
 
-    print(f"📋 {len(fests)} Feste heute gefunden.")
+    print(f"📋 {len(fests)} Feste heute ({heute}) gefunden.")
     return fests
 
 
@@ -191,29 +200,20 @@ def process_fest(fest, state):
 
     page_text = clean_text(soup.get_text(" ", strip=True))
 
-    # Festname vom h2 der Detailseite holen
-    # h1 = Site-Header (ESV), h2 = echter Festname
-    fest_name = fest["fest_name"]  # Fallback: Name von Hauptseite
-    IGNORIEREN = [
-        "eidgenössischer schwingerverband",
-        "association fédérale",
-        "esv",
-        "schwingen",
-        "ranglisten",
-        "verband",
-    ]
-    for tag in soup.find_all(["h2", "h3", "h1"]):
-        kandidat = clean_text(tag.get_text(" ", strip=True))
-        kandidat_lower = kandidat.lower()
-        # Überspringen: zu kurz, nur Datum, oder Site-Header
-        if not kandidat or len(kandidat) < 8:
-            continue
-        if re.match(r"^\d{2}\.\d{2}\.\d{4}$", kandidat):
-            continue
-        if any(ign in kandidat_lower for ign in IGNORIEREN):
-            continue
-        fest_name = kandidat
-        break
+    # Festname: vom Haupt-Link bereits korrekt (z.B. "Urner Kantonales Schwingfest")
+    # Zusätzlich versuchen den vollständigen Namen inkl. Datum aus Detailseite zu holen
+    fest_name = fest["fest_name"]  # bereits korrekt von Hauptseite
+    # Versuche den <title> Tag — enthält oft "Festname, DD.MM.YYYY"
+    title_tag = soup.find("title")
+    if title_tag:
+        title_text = clean_text(title_tag.get_text(" ", strip=True))
+        # Title hat oft Format "Festname : Offizielle Rangliste" oder ähnlich
+        title_clean = title_text.split(":")[0].split("|")[0].strip()
+        IGNORIEREN = ["eidgenössischer", "association", "esv.ch", "ranglisten"]
+        if (title_clean and len(title_clean) > 8
+                and not any(ign in title_clean.lower() for ign in IGNORIEREN)
+                and not re.match(r"^\d{2}\.\d{2}\.\d{4}$", title_clean)):
+            fest_name = title_clean
 
     # Datum
     datum_match = re.search(r"\d{2}\.\d{2}\.\d{4}", page_text)
