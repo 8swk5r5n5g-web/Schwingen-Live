@@ -180,13 +180,29 @@ def process_fest(fest, state):
 
     page_text = clean_text(soup.get_text(" ", strip=True))
 
-    # Festname vom h1/h2 der Detailseite — zuverlässiger als Link-Text
-    fest_name = fest["fest_name"]
-    for tag in soup.find_all(["h1", "h2"]):
+    # Festname vom h2 der Detailseite holen
+    # h1 = Site-Header (ESV), h2 = echter Festname
+    fest_name = fest["fest_name"]  # Fallback: Name von Hauptseite
+    IGNORIEREN = [
+        "eidgenössischer schwingerverband",
+        "association fédérale",
+        "esv",
+        "schwingen",
+        "ranglisten",
+        "verband",
+    ]
+    for tag in soup.find_all(["h2", "h3", "h1"]):
         kandidat = clean_text(tag.get_text(" ", strip=True))
-        if kandidat and len(kandidat) > 10 and not re.match(r"^\d{2}\.\d{2}\.\d{4}$", kandidat):
-            fest_name = kandidat
-            break
+        kandidat_lower = kandidat.lower()
+        # Überspringen: zu kurz, nur Datum, oder Site-Header
+        if not kandidat or len(kandidat) < 8:
+            continue
+        if re.match(r"^\d{2}\.\d{2}\.\d{4}$", kandidat):
+            continue
+        if any(ign in kandidat_lower for ign in IGNORIEREN):
+            continue
+        fest_name = kandidat
+        break
 
     # Datum
     datum_match = re.search(r"\d{2}\.\d{2}\.\d{4}", page_text)
