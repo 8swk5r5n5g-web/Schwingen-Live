@@ -2,6 +2,7 @@ import os
 import re
 import json
 import hashlib
+import time
 from io import BytesIO
 from html import escape
 from urllib.parse import urlparse, parse_qs, urljoin
@@ -46,39 +47,40 @@ def classify_pdf(link_text: str, href: str) -> str | None:
     """
     Gibt zurück:
       'schlussrangliste'  → Offizielle Schlussrangliste
-      'schlussstatistik'  → Statistik am Ende
+      'schlussstatistik'  → Statistik am Ende (nur wenn "schluss" explizit im Text)
       'gangstatistik'     → Statistik nach einem Gang
       None                → ignorieren
+
+    Regel: Nur senden was EXPLIZIT als Schluss oder Gang-Statistik erkennbar ist.
+    Alles Unklare wird ignoriert → lieber zu wenig als Spam.
     """
     text  = link_text.lower()
     fname = href.lower().split("/")[-1].split("?")[0]
     combined = f"{text} {fname}"
 
-    # Harte Ausschlüsse zuerst
+    # Harte Ausschlüsse — immer ignorieren
     ausschluss = [
         "startliste", "einteilung", "paarung",
         "zwischenrangliste", "rangliste nach",
+        "1. gang", "2. gang", "3. gang", "4. gang", "5. gang", "6. gang",
     ]
     if any(a in combined for a in ausschluss):
         return None
 
-    # Offizielle Schlussrangliste
+    # Offizielle Schlussrangliste (explizit "schlussrangliste" im Text)
     if "schlussrangliste" in combined:
         return "schlussrangliste"
 
-    # Statistik — unterscheide Schluss vs. Gang
-    if "statistik" in combined:
-        if "schluss" in combined:
-            return "schlussstatistik"
-        # "nach einem gang", "nach 2 gängen" etc. → Gangstatistik
-        if re.search(r"nach\s+(\d+|einem)\s+gang", combined):
-            return "gangstatistik"
-        # Dateiname endet auf -st.pdf → vermutlich Schlussstatistik
-        if fname.endswith("-st.pdf"):
-            return "schlussstatistik"
-        # Generische Statistik ohne Gang-Nummer → Schlussstatistik
+    # Schlussstatistik — NUR wenn "schluss" + "statistik" beide explizit vorhanden
+    if "statistik" in combined and "schluss" in combined:
         return "schlussstatistik"
 
+    # Gangstatistik — NUR wenn "nach X gang" explizit im Link-Text steht
+    # Beispiel: "Statistik nach einem Gang", "Statistik nach 3 Gängen"
+    if "statistik" in combined and re.search(r"nach\s+(\d+|einem)\s+g[aä]ng", combined):
+        return "gangstatistik"
+
+    # Alles andere ignorieren — kein Raten!
     return None
 
 
@@ -104,6 +106,7 @@ def save_state(state: dict):
 
 # ── HTTP ──────────────────────────────────────────────────────────────────────
 def get_soup(url: str) -> BeautifulSoup:
+    time.sleep(1.5)  # Pause zwischen Anfragen → verhindert Rate Limiting (429)
     res = requests.get(url, headers=HEADERS, timeout=30)
     res.raise_for_status()
     return BeautifulSoup(res.text, "html.parser")
@@ -190,6 +193,15 @@ def process_fest(fest: dict, state: dict):
 
     page_text = clean_text(soup.get_text(" ", strip=True))
 
+    # Festname von der Detailseite holen (h1 oder h2) — zuverlässiger als Link-Text
+    fest_name = fest["fest_name"]  # Fallback: Name von Hauptseite
+    for tag in soup.find_all(["h1", "h2"]):
+        name_candidate = clean_text(tag.get_text(" ", strip=True))
+        # Nur verwenden wenn nicht nur ein Datum und nicht zu kurz
+        if name_candidate and len(name_candidate) > 10 and not re.match(r"^\d{2}\.\d{2}\.\d{4}$", name_candidate):
+            fest_name = name_candidate
+            break
+
     datum_match = re.search(r"\d{2}\.\d{2}\.\d{4}", page_text)
     datum = datum_match.group(0) if datum_match else "–"
 
@@ -208,20 +220,28 @@ def process_fest(fest: dict, state: dict):
         if pdf_typ is None:
             continue  # ignorieren
 
-        # Eindeutiger Schlüssel
+        # Eindeutiger Schlüssel basierend auf Pfad
         clean_path  = href.split("?")[0].strip("/")
         storage_key = f"{fest['anlass_id']}_{clean_path}"
 
         if storage_key in state["known_pdfs"]:
-            continue  # bereits bekannt
+            continue  # bereits bekannt (gleicher Pfad)
 
         # PDF laden
         pdf_bytes = fetch_pdf(href)
         if not pdf_bytes:
             continue
 
+        # Duplikat-Check via Inhalt (MD5) — verhindert gleiche Datei unter verschiedenen Links
+        pdf_hash = hashlib.md5(pdf_bytes).hexdigest()
+        if pdf_hash in state["known_pdfs"].values():
+            print(f"    ⏭️  Gleicher Inhalt bereits gesendet (Hash-Duplikat), überspringe.")
+            state["known_pdfs"][storage_key] = pdf_hash  # Pfad trotzdem merken
+            save_state(state)
+            continue
+
         # Sofort in State speichern → kein Duplikat bei Absturz
-        state["known_pdfs"][storage_key] = hashlib.md5(pdf_bytes).hexdigest()
+        state["known_pdfs"][storage_key] = pdf_hash
         save_state(state)
 
         # Beim ersten Run nur Baseline bauen, nicht senden
@@ -244,13 +264,20 @@ def process_fest(fest: dict, state: dict):
             titel = "Schlussstatistik"
         else:  # gangstatistik
             emoji = "📈"
-            # Gang-Nummer aus Link-Text extrahieren
-            gang_match = re.search(r"nach\s+(\d+|einem)\s+gang", link_text.lower())
-            gang_nr = gang_match.group(1) if gang_match else "?"
-            titel = f"Statistik nach {gang_nr} Gang/Gängen"
+            # Gang-Nummer sauber aus Link-Text extrahieren
+            # Beispiele: "Statistik nach einem Gang" → "1"
+            #            "Statistik nach 3 Gängen"   → "3"
+            gang_match = re.search(r"nach\s+(\d+|einem)\s+g[aä]ng", link_text.lower())
+            if gang_match:
+                nr = gang_match.group(1)
+                gang_nr = "1" if nr == "einem" else nr
+                einheit = "Gang" if gang_nr == "1" else "Gängen"
+                titel = f"Statistik nach {gang_nr} {einheit}"
+            else:
+                titel = "Zwischenstatistik"
 
         caption = (
-            f"🏟️ <b>{escape(fest['fest_name'])}</b>\n"
+            f"🏟️ <b>{escape(fest_name)}</b>\n"
             f"🗓️ {escape(datum)}\n"
             f"{emoji} <b>{escape(titel)}</b>\n"
         )
