@@ -209,7 +209,7 @@ def main():
     if not state["baseline_done"]:
         state["baseline_done"] = True
         save_state(state)
-        print("✅ Baseline fixiert.")
+        print("✅ Baseline erfolgreich fixiert.")
 
     print("🏁 Bot-Scan beendet.")
 
