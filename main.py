@@ -14,7 +14,7 @@ BOT_TOKEN         = os.getenv("BOT_TOKEN")
 CHAT_ID_AKTIV     = os.getenv("CHAT_ID")
 CHAT_ID_NACHWUCHS = os.getenv("CHAT_ID_NACHWUCHS")
 
-RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/"
+RANGLISTEN_URL = "https://arls.esv.ch/ranglisten/?jahr={year}"  # year wird in extract_fests() gesetzt
 STATE_FILE     = "state.json"
 
 HEADERS = {
@@ -137,17 +137,18 @@ def is_nachwuchs(name):
 
 def extract_fests():
     from datetime import date
-    heute = date.today().strftime("%d.%m.%Y")  # Format auf Seite: 06.06.2026
-    print(f"📅 Suche Feste vom {heute}")
+    today     = date.today()
+    heute     = today.strftime("%d.%m.%Y")   # 06.06.2026
+    jahr      = today.strftime("%Y")          # 2026
+    url       = f"https://arls.esv.ch/ranglisten/?jahr={jahr}"
+    print(f"📅 Suche Feste vom {heute} auf {url}")
 
     try:
-        soup = get_soup(RANGLISTEN_URL)
+        soup = get_soup(url)
     except Exception as e:
         print(f"❌ Hauptseite nicht ladbar: {e}")
         return []
 
-    # Die Seite hat eine Tabelle: Datum | Festname | Typ | Ort | Rangliste
-    # Jede Zeile = eine <tr>, das Datum steht als erster Link in der Zeile
     fests, seen = [], set()
 
     for row in soup.find_all("tr"):
@@ -155,12 +156,12 @@ def extract_fests():
         if len(cells) < 2:
             continue
 
-        # Datum aus erster Zelle
+        # Datum aus erster Zelle prüfen
         datum_text = clean_text(cells[0].get_text(" ", strip=True))
         if heute not in datum_text:
             continue
 
-        # Festname und anlass_id aus den Links in der Zeile
+        # Festname + anlass_id aus Links in der Zeile
         for link in row.find_all("a", href=True):
             href = link["href"]
             if "anlass=" not in href:
@@ -169,8 +170,9 @@ def extract_fests():
             if not anlass_id or anlass_id in seen:
                 continue
             fest_name = clean_text(link.get_text(" ", strip=True))
-            # Nur echte Festnamen — kein Datum, kein "Rangliste", kein Typ
-            if not fest_name or fest_name in ("Rangliste", "aktiv", "jung") or re.match(r"^\d{2}\.\d{2}\.\d{4}$", fest_name):
+            # Nur echte Festnamen übernehmen
+            skip = {"Rangliste", "aktiv", "jung", ""}
+            if fest_name in skip or re.match(r"^\d{2}\.\d{2}\.\d{4}$", fest_name):
                 continue
             seen.add(anlass_id)
             fests.append({
@@ -179,7 +181,7 @@ def extract_fests():
                 "fest_name":  fest_name,
                 "nachwuchs":  is_nachwuchs(fest_name),
             })
-            break  # Pro Zeile nur einen Eintrag
+            break  # pro Zeile nur ein Eintrag
 
     print(f"📋 {len(fests)} Feste heute ({heute}) gefunden.")
     return fests
