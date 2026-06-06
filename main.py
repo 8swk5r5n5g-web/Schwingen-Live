@@ -137,53 +137,40 @@ def is_nachwuchs(name):
 
 def extract_fests():
     from datetime import date
-    today     = date.today()
-    heute     = today.strftime("%d.%m.%Y")   # 06.06.2026
-    jahr      = today.strftime("%Y")          # 2026
-    url       = f"https://arls.esv.ch/ranglisten/?jahr={jahr}"
-    print(f"📅 Suche Feste vom {heute} auf {url}")
+    today        = date.today()
+    heute_anzeige = today.strftime("%d.%m.%Y")   # 06.06.2026 — für Logs
+    heute_pdf    = today.strftime("%Y-%m-%d")     # 2026-06-06 — in PDF-URLs
+    print(f"📅 Suche Feste vom {heute_anzeige}")
 
     try:
-        soup = get_soup(url)
+        soup = get_soup(RANGLISTEN_URL)
     except Exception as e:
         print(f"❌ Hauptseite nicht ladbar: {e}")
         return []
 
+    # Alle anlass-Links sammeln — Datumsfilter erst auf Detailseite via PDF-URL
     fests, seen = [], set()
-
-    for row in soup.find_all("tr"):
-        cells = row.find_all("td")
-        if len(cells) < 2:
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
+        if "anlass=" not in href:
             continue
-
-        # Datum aus erster Zelle prüfen
-        datum_text = clean_text(cells[0].get_text(" ", strip=True))
-        if heute not in datum_text:
+        anlass_id = parse_qs(urlparse(href).query).get("anlass", [""])[0]
+        if not anlass_id or anlass_id in seen:
             continue
+        fest_name = clean_text(link.get_text(" ", strip=True))
+        skip = {"Rangliste", "aktiv", "jung", ""}
+        if fest_name in skip or re.match(r"^\d{2}\.\d{2}\.\d{4}$", fest_name) or not fest_name:
+            continue
+        seen.add(anlass_id)
+        fests.append({
+            "anlass_id":   anlass_id,
+            "detail_url":  f"https://arls.esv.ch/ranglisten/?anlass={anlass_id}",
+            "fest_name":   fest_name,
+            "nachwuchs":   is_nachwuchs(fest_name),
+            "heute_pdf":   heute_pdf,   # wird in process_fest zum Filtern genutzt
+        })
 
-        # Festname + anlass_id aus Links in der Zeile
-        for link in row.find_all("a", href=True):
-            href = link["href"]
-            if "anlass=" not in href:
-                continue
-            anlass_id = parse_qs(urlparse(href).query).get("anlass", [""])[0]
-            if not anlass_id or anlass_id in seen:
-                continue
-            fest_name = clean_text(link.get_text(" ", strip=True))
-            # Nur echte Festnamen übernehmen
-            skip = {"Rangliste", "aktiv", "jung", ""}
-            if fest_name in skip or re.match(r"^\d{2}\.\d{2}\.\d{4}$", fest_name):
-                continue
-            seen.add(anlass_id)
-            fests.append({
-                "anlass_id":  anlass_id,
-                "detail_url": f"https://arls.esv.ch/ranglisten/?anlass={anlass_id}",
-                "fest_name":  fest_name,
-                "nachwuchs":  is_nachwuchs(fest_name),
-            })
-            break  # pro Zeile nur ein Eintrag
-
-    print(f"📋 {len(fests)} Feste heute ({heute}) gefunden.")
+    print(f"📋 {len(fests)} Feste total gefunden — filtere auf {heute_anzeige}.")
     return fests
 
 
@@ -225,12 +212,19 @@ def process_fest(fest, state):
     schwinger_match = re.search(r"Anzahl Schwinger\s+(\d+)", page_text, re.IGNORECASE)
     schwinger_anz = schwinger_match.group(1) if schwinger_match else ""
 
+    # Heutiges Datum für PDF-Filter
+    heute_pdf = fest.get("heute_pdf", "")
+
     # PDFs durchsuchen
     for link in soup.find_all("a", href=True):
         href      = link["href"].strip()
         link_text = clean_text(link.get_text(" ", strip=True))
 
         if not href.lower().split("?")[0].endswith(".pdf"):
+            continue
+
+        # Nur PDFs vom heutigen Tag — Datum steht in der URL: 2026-06-06_...
+        if heute_pdf and heute_pdf not in href:
             continue
 
         pdf_typ = classify_pdf(link_text, href)
